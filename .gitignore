@@ -1,0 +1,27 @@
+# Build artifacts
+build/
+_skbuild/
+dist/
+*.egg-info/
+*.so
+*.dylib
+*.dll
+*.o
+*.a
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Run outputs & temporary DAQ files
+*.daq
+*_report.json
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+compile_commands.json
