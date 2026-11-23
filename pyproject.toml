@@ -1,0 +1,29 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "triggerdaq"
+version = "0.1.0"
+description = "Hybrid C++20 / Python two-stage real-time detector trigger & DAQ engine"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+ui = ["rich>=13.0"]
+dev = ["pytest>=7.0", "rich>=13.0"]
+
+[project.scripts]
+triggerdaq = "triggerdaq.cli:main"
+triggerdaq-inspect = "triggerdaq.reader:main"
+
+[tool.scikit-build]
+cmake.version = ">=3.20"
+wheel.packages = ["python/triggerdaq"]
+cmake.define.TRIGGERDAQ_BUILD_PYTHON = "ON"
+cmake.define.TRIGGERDAQ_BUILD_TESTS = "OFF"
+cmake.define.TRIGGERDAQ_BUILD_BENCHMARKS = "OFF"
+editable.mode = "redirect"
