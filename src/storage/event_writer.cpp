@@ -181,14 +181,17 @@ DaqVerificationResult verify_daq_file(const std::string& path) {
         std::array<uint8_t, ZS_MAX_PAYLOAD_SIZE> zs_buf{};
         std::array<uint8_t, DAQ_RECORD_PAYLOAD_SIZE> decoded{};
         DaqRecordHeader rh{};
+        bool aborted_mid_record = false;
         while (ifs.read(reinterpret_cast<char*>(&rh), sizeof(rh))) {
             ++res.total_records;
             if (rh.length < ZS_BASE_PAYLOAD_SIZE || rh.length > ZS_MAX_PAYLOAD_SIZE) {
                 ++res.corrupt_records;
+                aborted_mid_record = true;
                 break;
             }
             if (!ifs.read(reinterpret_cast<char*>(zs_buf.data()), static_cast<std::streamsize>(rh.length))) {
                 ++res.corrupt_records;
+                aborted_mid_record = true;
                 break;
             }
             const uint32_t computed_crc = crc32c_compute(zs_buf.data(), rh.length);
@@ -204,7 +207,8 @@ DaqVerificationResult verify_daq_file(const std::string& path) {
             res.packed_payloads.insert(
                 res.packed_payloads.end(), decoded.begin(), decoded.end());
         }
-        if (ifs.gcount() > 0 && ifs.gcount() < static_cast<std::streamsize>(sizeof(rh))) {
+        if (!aborted_mid_record && ifs.gcount() > 0 &&
+            ifs.gcount() < static_cast<std::streamsize>(sizeof(rh))) {
             ++res.total_records;
             ++res.corrupt_records;
         }
