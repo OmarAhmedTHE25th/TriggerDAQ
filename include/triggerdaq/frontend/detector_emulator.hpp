@@ -60,7 +60,9 @@ public:
              EmulatorTelemetry& telemetry,
              EmulatorMode mode,
              double target_rate_khz,
-             uint64_t seed) noexcept;
+             uint64_t seed,
+             bool pin_thread = false,
+             uint32_t core_idx = 0) noexcept;
 };
 
 } // namespace triggerdaq
