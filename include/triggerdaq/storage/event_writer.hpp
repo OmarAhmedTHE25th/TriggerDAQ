@@ -36,13 +36,6 @@ struct DaqRecordHeader {
 
 static_assert(sizeof(DaqRecordHeader) == 8, "DaqRecordHeader must be exactly 8 bytes");
 
-struct DaqDiskRecord {
-    DaqRecordHeader header;
-    RawEventFrame frame;
-    HltDecisionMetadata meta;
-};
-
-// Note: RawEventFrame has alignas(64), so we serialize explicitly into packed 296-byte records.
 inline constexpr size_t DAQ_SERIALIZED_RECORD_SIZE =
     sizeof(DaqRecordHeader) + sizeof(RawEventFrame) + sizeof(HltDecisionMetadata); // 296 bytes
 
@@ -56,11 +49,13 @@ struct alignas(64) StorageTelemetry {
     std::atomic<uint64_t> bytes_written{0};
     std::atomic<uint64_t> events_written{0};
     std::atomic<uint64_t> flush_count{0};
+    std::atomic<uint64_t> storage_write_errors{0};
 
     void reset() noexcept {
         bytes_written.store(0, std::memory_order_relaxed);
         events_written.store(0, std::memory_order_relaxed);
         flush_count.store(0, std::memory_order_relaxed);
+        storage_write_errors.store(0, std::memory_order_relaxed);
     }
 };
 
@@ -85,13 +80,20 @@ public:
 
     void initialize(const std::string& output_path);
 
-    void run(std::atomic<bool>& stop_flag,
-             SlabArena& arena,
+    // Drains storage_queue until it is closed and empty, then flushes remaining buffers.
+    void run(SlabArena& arena,
              BoundedChannel<SlotHandle>& storage_queue,
-             StorageTelemetry& telemetry) noexcept;
+             StorageTelemetry& telemetry,
+             bool pin_thread = false,
+             uint32_t core_idx = 2) noexcept;
 
 private:
-    void flush_buffer(const uint8_t* data, size_t len, int fd, StorageTelemetry& telemetry) noexcept;
+    bool flush_buffer(const uint8_t* data,
+                      size_t len,
+                      int fd,
+                      bool has_file_sink,
+                      bool& io_failed,
+                      StorageTelemetry& telemetry) noexcept;
 
     std::string output_path_;
     std::unique_ptr<uint8_t[]> buffers_[2];

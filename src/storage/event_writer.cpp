@@ -1,10 +1,14 @@
 #include "triggerdaq/storage/event_writer.hpp"
 
 #include <array>
+#include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <fstream>
 #include <thread>
+
+#include "triggerdaq/core/thread_utils.hpp"
 
 #if defined(__SSE4_2__)
 #include <nmmintrin.h>
@@ -126,7 +130,6 @@ DaqVerificationResult verify_daq_file(const std::string& path) {
             res.packed_payloads.end(), payload, payload + DAQ_RECORD_PAYLOAD_SIZE);
     }
 
-    // Count trailing truncated record as corrupt if any leftover bytes remain
     if (ifs.gcount() > 0) {
         ++res.total_records;
         ++res.corrupt_records;
@@ -141,40 +144,75 @@ void EventWriter::initialize(const std::string& output_path) {
     buffers_[1] = std::make_unique<uint8_t[]>(STAGING_BUFFER_BYTES);
 }
 
-void EventWriter::flush_buffer(const uint8_t* data,
+bool EventWriter::flush_buffer(const uint8_t* data,
                                size_t len,
                                int fd,
+                               bool has_file_sink,
+                               bool& io_failed,
                                StorageTelemetry& telemetry) noexcept {
     if (len == 0) {
-        return;
+        return !io_failed;
     }
+    if (!has_file_sink) {
+        // Null sink mode (benchmarking): count framed bytes
+        telemetry.bytes_written.fetch_add(len, std::memory_order_relaxed);
+        telemetry.flush_count.fetch_add(1, std::memory_order_relaxed);
+        return true;
+    }
+    if (io_failed || fd < 0) {
+        telemetry.storage_write_errors.fetch_add(1, std::memory_order_relaxed);
+        io_failed = true;
+        return false;
+    }
+
 #if defined(__linux__) || defined(__unix__)
-    if (fd >= 0) {
-        size_t written = 0;
-        while (written < len) {
-            const ssize_t n = ::write(fd, data + written, len - written);
-            if (n <= 0) {
-                break;
-            }
+    size_t written = 0;
+    while (written < len) {
+        const ssize_t n = ::write(fd, data + written, len - written);
+        if (n > 0) {
             written += static_cast<size_t>(n);
+        } else if (n < 0 && errno == EINTR) {
+            continue; // Retry interrupted syscall
+        } else {
+            // Hard I/O error (ENOSPC, EIO, EBADF, etc.): halt further silent byte increments
+            if (written > 0) {
+                telemetry.bytes_written.fetch_add(written, std::memory_order_relaxed);
+            }
+            telemetry.storage_write_errors.fetch_add(1, std::memory_order_relaxed);
+            io_failed = true;
+            return false;
         }
     }
+    telemetry.bytes_written.fetch_add(written, std::memory_order_relaxed);
+    telemetry.flush_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
 #else
     (void)data;
-    (void)fd;
-#endif
     telemetry.bytes_written.fetch_add(len, std::memory_order_relaxed);
     telemetry.flush_count.fetch_add(1, std::memory_order_relaxed);
+    return true;
+#endif
 }
 
-void EventWriter::run(std::atomic<bool>& stop_flag,
-                      SlabArena& arena,
+void EventWriter::run(SlabArena& arena,
                       BoundedChannel<SlotHandle>& storage_queue,
-                      StorageTelemetry& telemetry) noexcept {
+                      StorageTelemetry& telemetry,
+                      bool pin_thread,
+                      uint32_t core_idx) noexcept {
+    if (pin_thread) {
+        pin_current_thread(core_idx);
+    }
+
+    const bool has_file_sink = !output_path_.empty();
+    bool io_failed = false;
     int fd = -1;
 #if defined(__linux__) || defined(__unix__)
-    if (!output_path_.empty()) {
+    if (has_file_sink) {
         fd = ::open(output_path_.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) {
+            io_failed = true;
+            telemetry.storage_write_errors.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 #endif
 
@@ -185,7 +223,8 @@ void EventWriter::run(std::atomic<bool>& stop_flag,
     file_header.record_payload_size = DAQ_RECORD_PAYLOAD_SIZE;
     file_header.run_start_timestamp_ns = system_now_ns();
     file_header.reserved = 0;
-    flush_buffer(reinterpret_cast<const uint8_t*>(&file_header), sizeof(file_header), fd, telemetry);
+    (void)flush_buffer(reinterpret_cast<const uint8_t*>(&file_header),
+                       sizeof(file_header), fd, has_file_sink, io_failed, telemetry);
 
     int active_buf = 0;
     size_t active_offset = 0;
@@ -193,7 +232,7 @@ void EventWriter::run(std::atomic<bool>& stop_flag,
     for (;;) {
         SlotHandle slot = INVALID_SLOT;
         if (!storage_queue.try_pop(slot)) {
-            if (stop_flag.load(std::memory_order_acquire) && storage_queue.empty()) {
+            if (storage_queue.is_closed() && storage_queue.empty()) {
                 break;
             }
             std::this_thread::yield();
@@ -205,32 +244,39 @@ void EventWriter::run(std::atomic<bool>& stop_flag,
             const size_t flush_len = active_offset;
             active_buf = 1 - active_buf;
             active_offset = 0;
-            flush_buffer(buffers_[flush_idx].get(), flush_len, fd, telemetry);
+            (void)flush_buffer(buffers_[flush_idx].get(), flush_len, fd,
+                               has_file_sink, io_failed, telemetry);
         }
 
         uint8_t* dst = buffers_[active_buf].get() + active_offset;
         uint8_t* payload_dst = dst + sizeof(DaqRecordHeader);
 
+        // Acquire fence before reading slot payload published by upstream HLT worker
+        std::atomic_thread_fence(std::memory_order_acquire);
         const RawEventFrame* frame = arena.get_frame(slot);
         const HltDecisionMetadata* meta = arena.get_metadata(slot);
 
         std::memcpy(payload_dst, frame, sizeof(RawEventFrame));
         std::memcpy(payload_dst + sizeof(RawEventFrame), meta, sizeof(HltDecisionMetadata));
 
-        // Release slot back to SlabArena immediately after copy into staging buffer
-        arena.release(slot);
-
+        // Compute record header and CRC32C checksum BEFORE releasing slot back to SlabArena
         DaqRecordHeader rh{};
         rh.length = DAQ_RECORD_PAYLOAD_SIZE;
         rh.crc32c = crc32c_compute(payload_dst, DAQ_RECORD_PAYLOAD_SIZE);
         std::memcpy(dst, &rh, sizeof(rh));
 
+        // Release slot only after full staging copy + record header + CRC32C completion
+        arena.release(slot);
+
         active_offset += DAQ_SERIALIZED_RECORD_SIZE;
-        telemetry.events_written.fetch_add(1, std::memory_order_relaxed);
+        if (!io_failed) {
+            telemetry.events_written.fetch_add(1, std::memory_order_relaxed);
+        }
     }
 
     if (active_offset > 0) {
-        flush_buffer(buffers_[active_buf].get(), active_offset, fd, telemetry);
+        (void)flush_buffer(buffers_[active_buf].get(), active_offset, fd,
+                           has_file_sink, io_failed, telemetry);
     }
 
 #if defined(__linux__) || defined(__unix__)
