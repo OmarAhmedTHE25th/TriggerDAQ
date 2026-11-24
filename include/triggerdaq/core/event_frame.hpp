@@ -8,6 +8,10 @@ namespace triggerdaq {
 
 inline constexpr size_t CALORIMETER_CELLS = 64;
 inline constexpr size_t MUON_CHAMBERS = 16;
+inline constexpr uint16_t LHC_BUNCHES_PER_ORBIT = 3564;
+
+inline constexpr uint8_t FRAME_STATUS_PARTIAL_EB = 1U << 0;
+inline constexpr uint8_t FRAME_STATUS_ZERO_SUPPRESSED = 1U << 1;
 
 enum class TopologyTag : uint8_t {
     Background = 0,
@@ -25,7 +29,11 @@ struct alignas(64) RawEventFrame {
     uint32_t l1_trigger_bits;
     uint16_t hlt_score;
     uint8_t topology_tag;
-    uint8_t reserved[45];
+    uint8_t status_flags;
+    uint32_t orbit_id;
+    uint32_t lumi_block_id;
+    uint16_t bcid;
+    uint8_t reserved[34];
     uint8_t explicit_pad[20];
 };
 
@@ -40,7 +48,11 @@ static_assert(offsetof(RawEventFrame, muon_hits) == 152);
 static_assert(offsetof(RawEventFrame, l1_trigger_bits) == 184);
 static_assert(offsetof(RawEventFrame, hlt_score) == 188);
 static_assert(offsetof(RawEventFrame, topology_tag) == 190);
-static_assert(offsetof(RawEventFrame, reserved) == 191);
+static_assert(offsetof(RawEventFrame, status_flags) == 191);
+static_assert(offsetof(RawEventFrame, orbit_id) == 192);
+static_assert(offsetof(RawEventFrame, lumi_block_id) == 196);
+static_assert(offsetof(RawEventFrame, bcid) == 200);
+static_assert(offsetof(RawEventFrame, reserved) == 202);
 static_assert(offsetof(RawEventFrame, explicit_pad) == 236);
 static_assert(offsetof(RawEventFrame, explicit_pad) + sizeof(RawEventFrame::explicit_pad) == 256,
               "RawEventFrame must have zero implicit compiler tail padding");
