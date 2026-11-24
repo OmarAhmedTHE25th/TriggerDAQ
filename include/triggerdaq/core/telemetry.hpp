@@ -9,6 +9,10 @@
 
 namespace triggerdaq {
 
+inline constexpr size_t DQM_DIMUON_BINS = 32;  // 0..160 GeV (5 GeV/bin)
+inline constexpr size_t DQM_JET_ET_BINS = 16;  // 0..1600 MeV (100 MeV/bin)
+inline constexpr size_t DQM_CALO_CELLS = 64;   // 64-cell occupancy map
+
 struct LatencyStats {
     double min{0.0};
     double p50{0.0};
@@ -51,7 +55,6 @@ private:
 };
 
 // Single-writer, multi-reader seqlock-protected latency histogram.
-// Prevents transient torn percentile reads during concurrent snapshot aggregation.
 class AtomicLatencyHistogram {
 public:
     void reset() noexcept;
@@ -76,6 +79,11 @@ struct alignas(64) WorkerTelemetry {
     std::atomic<uint64_t> dead_time_events{0};
     AtomicLatencyHistogram hlt_latency_ns;
 
+    // Live Data Quality Monitoring (DQM) physics histograms (updated on HLT accept)
+    std::array<std::atomic<uint64_t>, DQM_DIMUON_BINS> dqm_dimuon_mass_hist{};
+    std::array<std::atomic<uint64_t>, DQM_JET_ET_BINS> dqm_jet_et_hist{};
+    std::array<std::atomic<uint64_t>, DQM_CALO_CELLS> dqm_calo_occupancy{};
+
     void reset() noexcept {
         hlt_accepted.store(0, std::memory_order_relaxed);
         hlt_rejected.store(0, std::memory_order_relaxed);
@@ -83,8 +91,27 @@ struct alignas(64) WorkerTelemetry {
         hlt_false_positives.store(0, std::memory_order_relaxed);
         dead_time_events.store(0, std::memory_order_relaxed);
         hlt_latency_ns.reset();
+        for (auto& b : dqm_dimuon_mass_hist) b.store(0, std::memory_order_relaxed);
+        for (auto& b : dqm_jet_et_hist) b.store(0, std::memory_order_relaxed);
+        for (auto& b : dqm_calo_occupancy) b.store(0, std::memory_order_relaxed);
     }
 };
+
+struct LumiBlockRecord {
+    uint32_t lumi_block_id{0};
+    double start_elapsed_s{0.0};
+    double end_elapsed_s{0.0};
+    uint64_t events_generated{0};
+    uint64_t l1_accepted{0};
+    uint64_t hlt_accepted{0};
+    uint64_t dead_time_events{0};
+    double live_time_fraction{1.0};
+    uint32_t num_rules{0};
+    std::array<float, 8> active_prescales{};
+};
+
+static_assert(std::is_trivially_copyable_v<LumiBlockRecord>,
+              "LumiBlockRecord must be trivially copyable");
 
 struct TelemetrySnapshot {
     uint64_t events_generated{0};
@@ -96,9 +123,16 @@ struct TelemetrySnapshot {
     uint64_t dead_time_ns{0};
     uint64_t l1_budget_violations{0};
     uint64_t bytes_written{0};
+    uint64_t raw_bytes_uncompressed{0};
     uint64_t events_written{0};
     uint64_t storage_write_errors{0};
+    double compression_ratio{1.0};
 
+    uint64_t eb_events_assembled{0};
+    uint64_t eb_partial_events{0};
+    uint64_t eb_timeout_events{0};
+
+    uint32_t current_lumi_block{1};
     uint64_t arena_allocated{0};
     uint64_t arena_peak{0};
     uint64_t arena_capacity{0};
@@ -113,6 +147,11 @@ struct TelemetrySnapshot {
     uint32_t num_rules{0};
     std::array<float, 8> prescale_factors{};
     std::array<uint64_t, 8> rule_accept_counts{};
+
+    // Merged DQM physics histograms
+    std::array<uint64_t, DQM_DIMUON_BINS> dqm_dimuon_mass_hist{};
+    std::array<uint64_t, DQM_JET_ET_BINS> dqm_jet_et_hist{};
+    std::array<uint64_t, DQM_CALO_CELLS> dqm_calo_occupancy{};
 
     uint64_t signal_generated{0};
     uint64_t hlt_true_positives{0};
