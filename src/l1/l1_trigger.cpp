@@ -3,6 +3,7 @@
 #include <chrono>
 #include <thread>
 
+#include "triggerdaq/core/thread_utils.hpp"
 #include "triggerdaq/l1/simd_kernels.hpp"
 
 namespace triggerdaq {
@@ -58,13 +59,18 @@ uint32_t L1Trigger::evaluate_frame(const RawEventFrame& frame,
     return trigger_bits;
 }
 
-void L1Trigger::run(std::atomic<bool>& stop_flag,
-                    SlabArena& arena,
+void L1Trigger::run(SlabArena& arena,
                     BoundedChannel<SlotHandle>& l1_queue,
                     BoundedChannel<SlotHandle>& hlt_queue,
                     const AtomicMenuSlot& menu_slot,
                     L1Telemetry& telemetry,
-                    uint64_t l1_budget_ns) noexcept {
+                    uint64_t l1_budget_ns,
+                    bool pin_thread,
+                    uint32_t core_idx) noexcept {
+    if (pin_thread) {
+        pin_current_thread(core_idx);
+    }
+
     Prescaler prescaler;
     uint64_t last_menu_version = 0;
     {
@@ -82,7 +88,7 @@ void L1Trigger::run(std::atomic<bool>& stop_flag,
     for (;;) {
         SlotHandle slot = INVALID_SLOT;
         if (!l1_queue.try_pop(slot)) {
-            if (stop_flag.load(std::memory_order_acquire) && l1_queue.empty()) {
+            if (l1_queue.is_closed() && l1_queue.empty()) {
                 break;
             }
             std::this_thread::yield();
@@ -126,15 +132,16 @@ void L1Trigger::run(std::atomic<bool>& stop_flag,
 
         if (bits != 0U) {
             telemetry.l1_accepted.fetch_add(1, std::memory_order_relaxed);
-            if (!hlt_queue.try_push(slot)) {
-                arena.release(slot);
-                telemetry.dead_time_events.fetch_add(1, std::memory_order_relaxed);
-            }
+            // Lossless push to HLT: block/yield rather than dropping post-L1 accepted events
+            hlt_queue.push_blocking(slot);
         } else {
             telemetry.l1_rejected.fetch_add(1, std::memory_order_relaxed);
             arena.release(slot);
         }
     }
+
+    // Signal downstream HLT farm that no more L1 events will arrive
+    hlt_queue.close();
 }
 
 } // namespace triggerdaq

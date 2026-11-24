@@ -71,13 +71,15 @@ public:
                                    Prescaler& prescaler,
                                    L1Telemetry& telemetry) noexcept;
 
-    void run(std::atomic<bool>& stop_flag,
-             SlabArena& arena,
+    // Drains l1_queue until it is closed and empty, then signals hlt_queue closed.
+    void run(SlabArena& arena,
              BoundedChannel<SlotHandle>& l1_queue,
              BoundedChannel<SlotHandle>& hlt_queue,
              const AtomicMenuSlot& menu_slot,
              L1Telemetry& telemetry,
-             uint64_t l1_budget_ns) noexcept;
+             uint64_t l1_budget_ns,
+             bool pin_thread = false,
+             uint32_t core_idx = 1) noexcept;
 };
 
 } // namespace triggerdaq
