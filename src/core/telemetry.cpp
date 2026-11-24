@@ -166,13 +166,23 @@ void AtomicLatencyHistogram::copy_to(LatencyHistogram& out) const noexcept {
 
         uint64_t sum = 0;
         for (size_t i = 0; i < LatencyHistogram::NUM_BUCKETS; ++i) {
+#if defined(__SANITIZE_THREAD__)
+            const uint64_t c = buckets_[i].load(std::memory_order_acquire);
+#else
             const uint64_t c = buckets_[i].load(std::memory_order_relaxed);
+#endif
             out.buckets_[i] = c;
             sum += c;
         }
+#if defined(__SANITIZE_THREAD__)
+        const uint64_t mn = min_value_.load(std::memory_order_acquire);
+        const uint64_t mx = max_value_.load(std::memory_order_acquire);
+#else
         const uint64_t mn = min_value_.load(std::memory_order_relaxed);
         const uint64_t mx = max_value_.load(std::memory_order_relaxed);
-
+        // Acquire fence prevents preceding relaxed bucket/min/max loads from reordering after s2 on ARM64
+        std::atomic_thread_fence(std::memory_order_acquire);
+#endif
         const uint64_t s2 = seq_.load(std::memory_order_acquire);
         if (s1 == s2) {
             out.total_count_ = sum;
