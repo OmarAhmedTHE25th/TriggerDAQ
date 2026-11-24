@@ -25,7 +25,11 @@ RECORD_DTYPE = np.dtype(
         ("l1_trigger_bits", "<u4"),
         ("hlt_score", "<u2"),
         ("topology_tag", "u1"),
-        ("reserved", "u1", (45,)),
+        ("status_flags", "u1"),
+        ("orbit_id", "<u4"),
+        ("lumi_block_id", "<u4"),
+        ("bcid", "<u2"),
+        ("reserved", "u1", (34,)),
         ("explicit_pad", "u1", (20,)),
         # HltDecisionMetadata (32 bytes)
         ("hlt_timestamp_ns", "<u8"),
@@ -73,6 +77,7 @@ TOPOLOGY_NAMES = {
 class DaqFileReport:
     path: str
     header_valid: bool
+    zero_suppressed: bool
     schema_version: int
     run_start_timestamp_ns: int
     total_records: int
@@ -95,7 +100,7 @@ class DaqFileReport:
 
 
 class DaqReader:
-    """Zero-copy verified reader for TriggerDAQ .daq binary run files."""
+    """Zero-copy verified reader for TriggerDAQ .daq binary run files (raw & zero-suppressed)."""
 
     @staticmethod
     def read(path: str | Path) -> DaqFileReport:
@@ -110,6 +115,7 @@ class DaqReader:
         return DaqFileReport(
             path=str_path,
             header_valid=bool(res["header_valid"]),
+            zero_suppressed=bool(res["zero_suppressed"]),
             schema_version=int(res["schema_version"]),
             run_start_timestamp_ns=int(res["run_start_timestamp_ns"]),
             total_records=int(res["total_records"]),
@@ -129,17 +135,23 @@ def main(argv: list[str] | None = None) -> int:
 
     report = DaqReader.read(args.file)
     print(f"TriggerDAQ Inspector: {report.path}")
-    print(f"  Header Valid:    {report.header_valid} (schema v{report.schema_version})")
+    print(
+        f"  Header Valid:    {report.header_valid} "
+        f"(schema v{report.schema_version}, ZS={'ON' if report.zero_suppressed else 'OFF'})"
+    )
     print(f"  Total Records:   {report.total_records}")
     print(f"  Valid Records:   {report.valid_records}")
     print(f"  Corrupt Records: {report.corrupt_records}")
 
     if report.valid_records > 0:
         scores = report.records["hlt_score"]
+        lbs = report.records["lumi_block_id"]
+        bcids = report.records["bcid"]
         topo = report.topology_counts()
         signal = topo["DiMuon"] + topo["LocalizedJet"]
         purity = (signal / report.valid_records) * 100.0
         print(f"  HLT Score:       mean={scores.mean():.1f}, min={scores.min()}, max={scores.max()}")
+        print(f"  LumiBlocks:      {lbs.min()}..{lbs.max()}  |  BCID range: {bcids.min()}..{bcids.max()}")
         print(f"  Signal Purity:   {purity:.2f}%")
         print("  Topology Breakdown:")
         for name, cnt in topo.items():
