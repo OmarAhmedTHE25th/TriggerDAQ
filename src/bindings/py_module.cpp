@@ -215,6 +215,7 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_ro("eb_events_assembled", &TelemetrySnapshot::eb_events_assembled)
         .def_ro("eb_partial_events", &TelemetrySnapshot::eb_partial_events)
         .def_ro("eb_timeout_events", &TelemetrySnapshot::eb_timeout_events)
+        .def_ro("eb_late_fragments_dropped", &TelemetrySnapshot::eb_late_fragments_dropped)
         .def_ro("current_lumi_block", &TelemetrySnapshot::current_lumi_block)
         .def_ro("arena_allocated", &TelemetrySnapshot::arena_allocated)
         .def_ro("arena_peak", &TelemetrySnapshot::arena_peak)
@@ -258,6 +259,7 @@ NB_MODULE(_triggerdaq_ext, m) {
             d["eb_events_assembled"] = s.eb_events_assembled;
             d["eb_partial_events"] = s.eb_partial_events;
             d["eb_timeout_events"] = s.eb_timeout_events;
+            d["eb_late_fragments_dropped"] = s.eb_late_fragments_dropped;
             d["current_lumi_block"] = s.current_lumi_block;
             d["arena_allocated"] = s.arena_allocated;
             d["arena_peak"] = s.arena_peak;

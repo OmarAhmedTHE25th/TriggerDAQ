@@ -16,6 +16,7 @@ TriggerEngine::~TriggerEngine() {
 }
 
 void TriggerEngine::configure(const EngineConfig& config, const TriggerMenu& menu) {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
     const RunState st = state_.load(std::memory_order_acquire);
     if (st == RunState::Running || st == RunState::Paused) {
         throw std::logic_error("Cannot configure() while TriggerEngine is Running or Paused");
@@ -33,10 +34,10 @@ void TriggerEngine::configure(const EngineConfig& config, const TriggerMenu& men
     storage_queue_.initialize(config_.storage_queue_capacity);
     menu_slot_.initialize(menu);
 
-    const uint32_t fixed_threads = config_.enable_event_builder ? 4U : 3U;
+    const uint32_t base_hlt_core = config_.enable_event_builder ? 4U : 3U;
     const bool effective_pin =
-        config_.pin_threads && can_pin_without_collision(config_.hlt_workers + fixed_threads);
-    hlt_farm_.initialize(config_.hlt_workers, effective_pin);
+        config_.pin_threads && can_pin_without_collision(config_.hlt_workers + base_hlt_core);
+    hlt_farm_.initialize(config_.hlt_workers, effective_pin, base_hlt_core);
     event_writer_.initialize(config_.output_path,
                              config_.enable_zero_suppression,
                              config_.zs_pedestal_threshold);
@@ -55,6 +56,7 @@ void TriggerEngine::configure(const EngineConfig& config, const TriggerMenu& men
 }
 
 void TriggerEngine::start() {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
     const RunState st = state_.load(std::memory_order_acquire);
     if (st != RunState::Configured && st != RunState::Stopped) {
         throw std::logic_error("TriggerEngine::start() requires Configured or Stopped state");
@@ -127,6 +129,7 @@ void TriggerEngine::start() {
 }
 
 void TriggerEngine::pause() {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
     RunState expected = RunState::Running;
     if (!state_.compare_exchange_strong(expected, RunState::Paused, std::memory_order_acq_rel)) {
         throw std::logic_error("TriggerEngine::pause() requires Running state");
@@ -135,6 +138,7 @@ void TriggerEngine::pause() {
 }
 
 void TriggerEngine::resume() {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
     RunState expected = RunState::Paused;
     if (!state_.compare_exchange_strong(expected, RunState::Running, std::memory_order_acq_rel)) {
         throw std::logic_error("TriggerEngine::resume() requires Paused state");
@@ -143,6 +147,11 @@ void TriggerEngine::resume() {
 }
 
 void TriggerEngine::stop() {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
+    stop_locked();
+}
+
+void TriggerEngine::stop_locked() {
     const RunState st = state_.load(std::memory_order_acquire);
     if (st == RunState::Stopped) {
         return;
@@ -195,9 +204,10 @@ void TriggerEngine::stop() {
 }
 
 void TriggerEngine::reset() {
+    std::lock_guard<std::mutex> fsm_lock(fsm_mu_);
     const RunState st = state_.load(std::memory_order_acquire);
     if (st == RunState::Running || st == RunState::Paused) {
-        stop();
+        stop_locked();
     }
     emulator_telemetry_.reset();
     eb_telemetry_.reset();
@@ -315,6 +325,8 @@ TelemetrySnapshot TriggerEngine::snapshot() const noexcept {
     snap.eb_events_assembled = eb_telemetry_.events_assembled.load(std::memory_order_relaxed);
     snap.eb_partial_events = eb_telemetry_.partial_events.load(std::memory_order_relaxed);
     snap.eb_timeout_events = eb_telemetry_.timeout_events.load(std::memory_order_relaxed);
+    snap.eb_late_fragments_dropped =
+        eb_telemetry_.late_fragments_dropped.load(std::memory_order_relaxed);
 
     snap.l1_accepted = l1_telemetry_.l1_accepted.load(std::memory_order_relaxed);
     snap.l1_rejected = l1_telemetry_.l1_rejected.load(std::memory_order_relaxed);

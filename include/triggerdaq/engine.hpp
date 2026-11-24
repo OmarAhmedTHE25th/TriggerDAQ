@@ -92,11 +92,13 @@ public:
     [[nodiscard]] const EngineConfig& config() const noexcept { return config_; }
 
 private:
+    void stop_locked();
     void lumi_block_loop() noexcept;
     void record_lumi_block(uint32_t lb_id, double start_s, double end_s,
                            uint64_t& prev_gen, uint64_t& prev_l1,
                            uint64_t& prev_hlt, uint64_t& prev_dt);
 
+    mutable std::mutex fsm_mu_;
     EngineConfig config_{};
     std::atomic<RunState> state_{RunState::Initial};
     std::atomic<bool> stop_frontend_{false};
