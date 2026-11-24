@@ -12,6 +12,9 @@ namespace triggerdaq {
 using SlotHandle = uint32_t;
 inline constexpr SlotHandle INVALID_SLOT = std::numeric_limits<uint32_t>::max();
 
+// Pre-allocated 64-byte aligned zero-copy memory pool.
+// Uses a 128-bit double-word atomic CAS (64-bit monotonic tag + 32-bit index)
+// on 64-bit targets to eliminate 32-bit ABA tag wraparound without ring-stall false exhaustion.
 class SlabArena {
 public:
     SlabArena() = default;
@@ -26,10 +29,10 @@ public:
     // Must be called once before hot-path threads start.
     void initialize(uint32_t capacity);
 
-    // Lock-free, ABA-safe O(1) slot acquisition. Returns INVALID_SLOT on exhaustion.
+    // Lock-free, 64-bit-tagged ABA-safe O(1) slot acquisition. Returns INVALID_SLOT on exhaustion.
     [[nodiscard]] SlotHandle acquire() noexcept;
 
-    // Lock-free, ABA-safe O(1) slot release.
+    // Lock-free, 64-bit-tagged ABA-safe O(1) slot release.
     void release(SlotHandle handle) noexcept;
 
     [[nodiscard]] RawEventFrame* get_frame(SlotHandle handle) noexcept {
@@ -50,7 +53,7 @@ public:
 
     [[nodiscard]] uint32_t capacity() const noexcept { return capacity_; }
     [[nodiscard]] uint64_t allocated_count() const noexcept {
-        return allocated_count_.load(std::memory_order_relaxed);
+        return allocated_count_.load(std::memory_order_acquire);
     }
     [[nodiscard]] uint64_t peak_occupancy() const noexcept {
         return peak_occupancy_.load(std::memory_order_relaxed);
@@ -60,15 +63,29 @@ public:
     }
 
 private:
-    static constexpr uint64_t pack_head(uint32_t tag, uint32_t index) noexcept {
-        return (static_cast<uint64_t>(tag) << 32) | static_cast<uint64_t>(index);
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+    using HeadWord = unsigned __int128;
+    static constexpr HeadWord pack_head(uint64_t tag, uint32_t index) noexcept {
+        return (static_cast<HeadWord>(tag) << 64) | static_cast<HeadWord>(index);
     }
-    static constexpr uint32_t unpack_tag(uint64_t head) noexcept {
-        return static_cast<uint32_t>(head >> 32);
+    static constexpr uint64_t unpack_tag(HeadWord head) noexcept {
+        return static_cast<uint64_t>(head >> 64);
     }
-    static constexpr uint32_t unpack_index(uint64_t head) noexcept {
+    static constexpr uint32_t unpack_index(HeadWord head) noexcept {
         return static_cast<uint32_t>(head & 0xFFFFFFFFULL);
     }
+#else
+    using HeadWord = uint64_t;
+    static constexpr HeadWord pack_head(uint64_t tag, uint32_t index) noexcept {
+        return (static_cast<uint64_t>(static_cast<uint32_t>(tag)) << 32) | static_cast<uint64_t>(index);
+    }
+    static constexpr uint64_t unpack_tag(HeadWord head) noexcept {
+        return static_cast<uint64_t>(head >> 32);
+    }
+    static constexpr uint32_t unpack_index(HeadWord head) noexcept {
+        return static_cast<uint32_t>(head & 0xFFFFFFFFULL);
+    }
+#endif
 
     void destroy() noexcept;
 
@@ -77,7 +94,7 @@ private:
     std::unique_ptr<std::atomic<uint32_t>[]> next_indices_;
     uint32_t capacity_{0};
 
-    alignas(64) std::atomic<uint64_t> free_head_{pack_head(0, INVALID_SLOT)};
+    alignas(64) HeadWord free_head_{pack_head(0, INVALID_SLOT)};
     alignas(64) std::atomic<uint64_t> allocated_count_{0};
     alignas(64) std::atomic<uint64_t> peak_occupancy_{0};
     alignas(64) std::atomic<uint64_t> exhaustion_drops_{0};

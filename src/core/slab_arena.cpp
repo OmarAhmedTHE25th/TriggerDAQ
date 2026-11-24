@@ -6,6 +6,40 @@
 
 namespace triggerdaq {
 
+namespace {
+
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+inline unsigned __int128 atomic_load_128(volatile unsigned __int128* ptr) noexcept {
+    // Atomic 128-bit read via inline lock cmpxchg16b (zero libatomic dependency)
+    return __sync_val_compare_and_swap(ptr, static_cast<unsigned __int128>(0),
+                                       static_cast<unsigned __int128>(0));
+}
+
+inline void atomic_store_128(volatile unsigned __int128* ptr, unsigned __int128 val) noexcept {
+    unsigned __int128 cur = atomic_load_128(ptr);
+    for (;;) {
+        const unsigned __int128 prev = __sync_val_compare_and_swap(ptr, cur, val);
+        if (prev == cur) {
+            return;
+        }
+        cur = prev;
+    }
+}
+
+inline bool atomic_cas_128(volatile unsigned __int128* ptr,
+                           unsigned __int128& expected,
+                           unsigned __int128 desired) noexcept {
+    const unsigned __int128 prev = __sync_val_compare_and_swap(ptr, expected, desired);
+    if (prev == expected) {
+        return true;
+    }
+    expected = prev;
+    return false;
+}
+#endif
+
+} // namespace
+
 SlabArena::~SlabArena() {
     destroy();
 }
@@ -45,14 +79,23 @@ void SlabArena::initialize(uint32_t capacity) {
     }
     next_indices_[capacity_ - 1].store(INVALID_SLOT, std::memory_order_relaxed);
 
-    free_head_.store(pack_head(0, 0), std::memory_order_release);
-    allocated_count_.store(0, std::memory_order_relaxed);
+    const HeadWord initial = pack_head(0, 0);
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+    atomic_store_128(&free_head_, initial);
+#else
+    __atomic_store_n(&free_head_, initial, __ATOMIC_RELEASE);
+#endif
+    allocated_count_.store(0, std::memory_order_release);
     peak_occupancy_.store(0, std::memory_order_relaxed);
     exhaustion_drops_.store(0, std::memory_order_relaxed);
 }
 
 SlotHandle SlabArena::acquire() noexcept {
-    uint64_t head = free_head_.load(std::memory_order_acquire);
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+    HeadWord head = atomic_load_128(&free_head_);
+#else
+    HeadWord head = __atomic_load_n(&free_head_, __ATOMIC_ACQUIRE);
+#endif
     for (;;) {
         const uint32_t idx = unpack_index(head);
         if (idx == INVALID_SLOT) {
@@ -60,11 +103,16 @@ SlotHandle SlabArena::acquire() noexcept {
             return INVALID_SLOT;
         }
         const uint32_t next = next_indices_[idx].load(std::memory_order_relaxed);
-        const uint32_t next_tag = unpack_tag(head) + 1U;
-        const uint64_t new_head = pack_head(next_tag, next);
-        if (free_head_.compare_exchange_weak(
-                head, new_head, std::memory_order_acq_rel, std::memory_order_acquire)) {
-            const uint64_t cur = allocated_count_.fetch_add(1, std::memory_order_relaxed) + 1;
+        const uint64_t next_tag = unpack_tag(head) + 1ULL;
+        const HeadWord new_head = pack_head(next_tag, next);
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+        const bool ok = atomic_cas_128(&free_head_, head, new_head);
+#else
+        const bool ok = __atomic_compare_exchange_n(
+            &free_head_, &head, new_head, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+#endif
+        if (ok) {
+            const uint64_t cur = allocated_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
             uint64_t peak = peak_occupancy_.load(std::memory_order_relaxed);
             while (cur > peak &&
                    !peak_occupancy_.compare_exchange_weak(
@@ -79,15 +127,28 @@ void SlabArena::release(SlotHandle handle) noexcept {
     if (handle >= capacity_) {
         return;
     }
-    uint64_t head = free_head_.load(std::memory_order_acquire);
+    // Release fence ensures all reads/copies/checksums of the slot's frame & metadata complete
+    // before the handle is made visible to a future acquirer.
+    std::atomic_thread_fence(std::memory_order_release);
+
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+    HeadWord head = atomic_load_128(&free_head_);
+#else
+    HeadWord head = __atomic_load_n(&free_head_, __ATOMIC_ACQUIRE);
+#endif
     for (;;) {
         const uint32_t old_idx = unpack_index(head);
         next_indices_[handle].store(old_idx, std::memory_order_relaxed);
-        const uint32_t next_tag = unpack_tag(head) + 1U;
-        const uint64_t new_head = pack_head(next_tag, handle);
-        if (free_head_.compare_exchange_weak(
-                head, new_head, std::memory_order_release, std::memory_order_acquire)) {
-            allocated_count_.fetch_sub(1, std::memory_order_relaxed);
+        const uint64_t next_tag = unpack_tag(head) + 1ULL;
+        const HeadWord new_head = pack_head(next_tag, handle);
+#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+        const bool ok = atomic_cas_128(&free_head_, head, new_head);
+#else
+        const bool ok = __atomic_compare_exchange_n(
+            &free_head_, &head, new_head, true, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+#endif
+        if (ok) {
+            allocated_count_.fetch_sub(1, std::memory_order_release);
             return;
         }
     }
