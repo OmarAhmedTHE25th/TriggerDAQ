@@ -73,7 +73,7 @@ ClassifierOutput Int8MlpClassifier::predict(const HltFeatures& features) noexcep
     q[0] = quantize_u01(features.cluster_centroid / 64.0f);
     q[1] = quantize_u01(features.cluster_width / 25.0f);
     q[2] = quantize_u01(features.isolation_ratio);
-    q[3] = quantize_u01(features.dimuon_inv_mass / 80.0f);
+    q[3] = quantize_u01(features.dimuon_inv_mass / 150.0f);
     q[4] = quantize_u01(features.total_et_norm);
     q[5] = quantize_u01(features.peak_muon_norm);
 
