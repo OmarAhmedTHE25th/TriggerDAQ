@@ -131,6 +131,7 @@ struct TelemetrySnapshot {
     uint64_t eb_events_assembled{0};
     uint64_t eb_partial_events{0};
     uint64_t eb_timeout_events{0};
+    uint64_t eb_late_fragments_dropped{0};
 
     uint32_t current_lumi_block{1};
     uint64_t arena_allocated{0};

@@ -43,6 +43,7 @@ struct alignas(64) EventBuilderTelemetry {
     std::atomic<uint64_t> events_assembled{0};
     std::atomic<uint64_t> partial_events{0};
     std::atomic<uint64_t> timeout_events{0};
+    std::atomic<uint64_t> late_fragments_dropped{0};
     std::atomic<uint64_t> calo_fragments_rx{0};
     std::atomic<uint64_t> muon_fragments_rx{0};
 
@@ -50,6 +51,7 @@ struct alignas(64) EventBuilderTelemetry {
         events_assembled.store(0, std::memory_order_relaxed);
         partial_events.store(0, std::memory_order_relaxed);
         timeout_events.store(0, std::memory_order_relaxed);
+        late_fragments_dropped.store(0, std::memory_order_relaxed);
         calo_fragments_rx.store(0, std::memory_order_relaxed);
         muon_fragments_rx.store(0, std::memory_order_relaxed);
     }
@@ -103,7 +105,14 @@ private:
                         BoundedChannel<SlotHandle>& l1_queue,
                         EventBuilderTelemetry& telemetry) noexcept;
 
+    static constexpr size_t TIMED_OUT_CACHE_SIZE = 4096;
+    static constexpr size_t TIMED_OUT_CACHE_MASK = TIMED_OUT_CACHE_SIZE - 1;
+
+    [[nodiscard]] bool is_recently_timed_out(uint64_t event_id) const noexcept;
+    void record_timed_out(uint64_t event_id) noexcept;
+
     std::unique_ptr<PendingEntry[]> table_;
+    std::unique_ptr<uint64_t[]> timed_out_ids_;
     size_t table_size_{0};
     size_t table_mask_{0};
     uint64_t timeout_ns_{500'000ULL};
