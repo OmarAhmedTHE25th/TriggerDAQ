@@ -43,6 +43,7 @@ add_library(triggerdaq_core STATIC
     src/core/slab_arena.cpp
     src/core/telemetry.cpp
     src/frontend/detector_emulator.cpp
+    src/eb/event_builder.cpp
     src/l1/simd_kernels.cpp
     src/l1/prescaler.cpp
     src/l1/l1_trigger.cpp
@@ -80,6 +81,7 @@ if(TRIGGERDAQ_BUILD_TESTS)
     triggerdaq_add_test(test_prescaler tests/cpp/test_prescaler.cpp)
     triggerdaq_add_test(test_storage_crc tests/cpp/test_storage_crc.cpp)
     triggerdaq_add_test(test_shutdown_drain tests/cpp/test_shutdown_drain.cpp)
+    triggerdaq_add_test(test_cern_upgrades tests/cpp/test_cern_upgrades.cpp)
 endif()
 
 # C++ Benchmarks
