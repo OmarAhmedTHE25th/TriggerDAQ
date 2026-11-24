@@ -3,6 +3,7 @@
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
+#include <nanobind/stl/vector.h>
 
 #include <cstddef>
 #include <stdexcept>
@@ -36,6 +37,10 @@ NB_MODULE(_triggerdaq_ext, m) {
         offsets["l1_trigger_bits"] = offsetof(RawEventFrame, l1_trigger_bits);
         offsets["hlt_score"] = offsetof(RawEventFrame, hlt_score);
         offsets["topology_tag"] = offsetof(RawEventFrame, topology_tag);
+        offsets["status_flags"] = offsetof(RawEventFrame, status_flags);
+        offsets["orbit_id"] = offsetof(RawEventFrame, orbit_id);
+        offsets["lumi_block_id"] = offsetof(RawEventFrame, lumi_block_id);
+        offsets["bcid"] = offsetof(RawEventFrame, bcid);
         offsets["reserved"] = offsetof(RawEventFrame, reserved);
         offsets["explicit_pad"] = offsetof(RawEventFrame, explicit_pad);
 
@@ -53,6 +58,13 @@ NB_MODULE(_triggerdaq_ext, m) {
         layout["offsets"] = offsets;
         return layout;
     }, "Return exact C++ sizeof/offsetof binary layout for RawEventFrame + HltDecisionMetadata");
+
+    nb::enum_<RunState>(m, "RunState")
+        .value("Initial", RunState::Initial)
+        .value("Configured", RunState::Configured)
+        .value("Running", RunState::Running)
+        .value("Paused", RunState::Paused)
+        .value("Stopped", RunState::Stopped);
 
     nb::enum_<EmulatorMode>(m, "EmulatorMode")
         .value("Sustained", EmulatorMode::Sustained)
@@ -76,6 +88,15 @@ NB_MODULE(_triggerdaq_ext, m) {
         .value("DiMuon", TopologyTag::DiMuon)
         .value("LocalizedJet", TopologyTag::LocalizedJet)
         .value("PileupNoise", TopologyTag::PileupNoise);
+
+    nb::class_<LhcFillingScheme>(m, "LhcFillingScheme")
+        .def(nb::init<>())
+        .def_rw("bunches_per_orbit", &LhcFillingScheme::bunches_per_orbit)
+        .def_rw("abort_gap_start", &LhcFillingScheme::abort_gap_start)
+        .def_rw("train_length", &LhcFillingScheme::train_length)
+        .def_rw("train_gap", &LhcFillingScheme::train_gap)
+        .def("is_filled", &LhcFillingScheme::is_filled)
+        .def("is_in_abort_gap", &LhcFillingScheme::is_in_abort_gap);
 
     nb::class_<TriggerRule>(m, "TriggerRule")
         .def(nb::init<>())
@@ -118,7 +139,44 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_rw("mode", &EngineConfig::mode)
         .def_rw("pin_threads", &EngineConfig::pin_threads)
         .def_rw("seed", &EngineConfig::seed)
-        .def_rw("output_path", &EngineConfig::output_path);
+        .def_rw("output_path", &EngineConfig::output_path)
+        .def_rw("filling_scheme", &EngineConfig::filling_scheme)
+        .def_rw("lumi_block_interval_s", &EngineConfig::lumi_block_interval_s)
+        .def_rw("enable_zero_suppression", &EngineConfig::enable_zero_suppression)
+        .def_rw("zs_pedestal_threshold", &EngineConfig::zs_pedestal_threshold)
+        .def_rw("enable_event_builder", &EngineConfig::enable_event_builder)
+        .def_rw("eb_timeout_us", &EngineConfig::eb_timeout_us)
+        .def_rw("eb_muon_drop_rate", &EngineConfig::eb_muon_drop_rate);
+
+    nb::class_<LumiBlockRecord>(m, "LumiBlockRecord")
+        .def(nb::init<>())
+        .def_ro("lumi_block_id", &LumiBlockRecord::lumi_block_id)
+        .def_ro("start_elapsed_s", &LumiBlockRecord::start_elapsed_s)
+        .def_ro("end_elapsed_s", &LumiBlockRecord::end_elapsed_s)
+        .def_ro("events_generated", &LumiBlockRecord::events_generated)
+        .def_ro("l1_accepted", &LumiBlockRecord::l1_accepted)
+        .def_ro("hlt_accepted", &LumiBlockRecord::hlt_accepted)
+        .def_ro("dead_time_events", &LumiBlockRecord::dead_time_events)
+        .def_ro("live_time_fraction", &LumiBlockRecord::live_time_fraction)
+        .def_ro("num_rules", &LumiBlockRecord::num_rules)
+        .def_ro("active_prescales", &LumiBlockRecord::active_prescales)
+        .def("to_dict", [](const LumiBlockRecord& r) {
+            nb::dict d;
+            d["lumi_block_id"] = r.lumi_block_id;
+            d["start_elapsed_s"] = r.start_elapsed_s;
+            d["end_elapsed_s"] = r.end_elapsed_s;
+            d["events_generated"] = r.events_generated;
+            d["l1_accepted"] = r.l1_accepted;
+            d["hlt_accepted"] = r.hlt_accepted;
+            d["dead_time_events"] = r.dead_time_events;
+            d["live_time_fraction"] = r.live_time_fraction;
+            nb::list ps;
+            for (uint32_t i = 0; i < r.num_rules && i < TriggerMenu::MAX_RULES; ++i) {
+                ps.append(r.active_prescales[i]);
+            }
+            d["active_prescales"] = ps;
+            return d;
+        });
 
     nb::class_<LatencyStats>(m, "LatencyStats")
         .def(nb::init<>())
@@ -150,8 +208,14 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_ro("dead_time_ns", &TelemetrySnapshot::dead_time_ns)
         .def_ro("l1_budget_violations", &TelemetrySnapshot::l1_budget_violations)
         .def_ro("bytes_written", &TelemetrySnapshot::bytes_written)
+        .def_ro("raw_bytes_uncompressed", &TelemetrySnapshot::raw_bytes_uncompressed)
         .def_ro("events_written", &TelemetrySnapshot::events_written)
         .def_ro("storage_write_errors", &TelemetrySnapshot::storage_write_errors)
+        .def_ro("compression_ratio", &TelemetrySnapshot::compression_ratio)
+        .def_ro("eb_events_assembled", &TelemetrySnapshot::eb_events_assembled)
+        .def_ro("eb_partial_events", &TelemetrySnapshot::eb_partial_events)
+        .def_ro("eb_timeout_events", &TelemetrySnapshot::eb_timeout_events)
+        .def_ro("current_lumi_block", &TelemetrySnapshot::current_lumi_block)
         .def_ro("arena_allocated", &TelemetrySnapshot::arena_allocated)
         .def_ro("arena_peak", &TelemetrySnapshot::arena_peak)
         .def_ro("arena_capacity", &TelemetrySnapshot::arena_capacity)
@@ -163,6 +227,9 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_ro("num_rules", &TelemetrySnapshot::num_rules)
         .def_ro("prescale_factors", &TelemetrySnapshot::prescale_factors)
         .def_ro("rule_accept_counts", &TelemetrySnapshot::rule_accept_counts)
+        .def_ro("dqm_dimuon_mass_hist", &TelemetrySnapshot::dqm_dimuon_mass_hist)
+        .def_ro("dqm_jet_et_hist", &TelemetrySnapshot::dqm_jet_et_hist)
+        .def_ro("dqm_calo_occupancy", &TelemetrySnapshot::dqm_calo_occupancy)
         .def_ro("signal_generated", &TelemetrySnapshot::signal_generated)
         .def_ro("hlt_true_positives", &TelemetrySnapshot::hlt_true_positives)
         .def_ro("hlt_false_positives", &TelemetrySnapshot::hlt_false_positives)
@@ -184,8 +251,14 @@ NB_MODULE(_triggerdaq_ext, m) {
             d["dead_time_ns"] = s.dead_time_ns;
             d["l1_budget_violations"] = s.l1_budget_violations;
             d["bytes_written"] = s.bytes_written;
+            d["raw_bytes_uncompressed"] = s.raw_bytes_uncompressed;
             d["events_written"] = s.events_written;
             d["storage_write_errors"] = s.storage_write_errors;
+            d["compression_ratio"] = s.compression_ratio;
+            d["eb_events_assembled"] = s.eb_events_assembled;
+            d["eb_partial_events"] = s.eb_partial_events;
+            d["eb_timeout_events"] = s.eb_timeout_events;
+            d["current_lumi_block"] = s.current_lumi_block;
             d["arena_allocated"] = s.arena_allocated;
             d["arena_peak"] = s.arena_peak;
             d["arena_capacity"] = s.arena_capacity;
@@ -217,6 +290,9 @@ NB_MODULE(_triggerdaq_ext, m) {
             }
             d["prescale_factors"] = ps;
             d["rule_accept_counts"] = rc;
+            d["dqm_dimuon_mass_hist"] = s.dqm_dimuon_mass_hist;
+            d["dqm_jet_et_hist"] = s.dqm_jet_et_hist;
+            d["dqm_calo_occupancy"] = s.dqm_calo_occupancy;
             d["signal_generated"] = s.signal_generated;
             d["hlt_true_positives"] = s.hlt_true_positives;
             d["hlt_false_positives"] = s.hlt_false_positives;
@@ -232,13 +308,19 @@ NB_MODULE(_triggerdaq_ext, m) {
 
     nb::class_<TriggerEngine>(m, "TriggerEngine")
         .def(nb::init<>())
+        .def("configure", &TriggerEngine::configure, nb::arg("config"), nb::arg("menu"))
         .def("initialize", &TriggerEngine::initialize, nb::arg("config"), nb::arg("menu"))
         .def("start", &TriggerEngine::start, nb::call_guard<nb::gil_scoped_release>())
+        .def("pause", &TriggerEngine::pause, nb::call_guard<nb::gil_scoped_release>())
+        .def("resume", &TriggerEngine::resume, nb::call_guard<nb::gil_scoped_release>())
         .def("stop", &TriggerEngine::stop, nb::call_guard<nb::gil_scoped_release>())
+        .def("reset", &TriggerEngine::reset, nb::call_guard<nb::gil_scoped_release>())
         .def("run_for_seconds", &TriggerEngine::run_for_seconds,
              nb::arg("seconds"), nb::call_guard<nb::gil_scoped_release>())
         .def("update_menu", &TriggerEngine::update_menu, nb::arg("menu"))
         .def("snapshot", &TriggerEngine::snapshot)
+        .def("lumi_blocks", &TriggerEngine::lumi_blocks)
+        .def("state", &TriggerEngine::state)
         .def("is_running", &TriggerEngine::is_running);
 
     m.def("verify_and_map_daq", [](const std::string& path) {
@@ -262,6 +344,7 @@ NB_MODULE(_triggerdaq_ext, m) {
 
         nb::dict out;
         out["header_valid"] = res.header_valid;
+        out["zero_suppressed"] = res.zero_suppressed;
         out["schema_version"] = res.schema_version;
         out["run_start_timestamp_ns"] = res.run_start_timestamp_ns;
         out["total_records"] = res.total_records;
@@ -270,5 +353,5 @@ NB_MODULE(_triggerdaq_ext, m) {
         out["raw_buffer"] = view;
         return out;
     }, nb::arg("path"),
-       "Verify CRC32C checksums of a .daq file and return a zero-copy NumPy byte buffer of valid records");
+       "Verify CRC32C checksums of a .daq file (raw or zero-suppressed) and return a zero-copy NumPy byte buffer");
 }
