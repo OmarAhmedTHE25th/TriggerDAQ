@@ -170,7 +170,87 @@ int main() {
         DaqVerificationResult corrupt_res = verify_daq_file(zs_path);
         CHECK(corrupt_res.header_valid);
         CHECK(corrupt_res.corrupt_records >= 1);
+
+        // Truncated ZS file: append a valid header + 3 trailing bytes of payload (must NOT double-count)
+        {
+            const std::string trunc_path = "/tmp/triggerdaq_test_zs_trunc.daq";
+            std::ofstream ofs(trunc_path, std::ios::binary | std::ios::trunc);
+            DaqFileHeader fh{};
+            std::memcpy(fh.magic, DAQ_MAGIC, sizeof(DAQ_MAGIC));
+            fh.schema_version = DAQ_SCHEMA_VERSION;
+            fh.record_payload_size = DAQ_RECORD_PAYLOAD_SIZE;
+            fh.flags = DAQ_FLAG_ZERO_SUPPRESSED;
+            ofs.write(reinterpret_cast<const char*>(&fh), sizeof(fh));
+
+            DaqRecordHeader rh{};
+            rh.length = static_cast<uint32_t>(ZS_BASE_PAYLOAD_SIZE);
+            rh.crc32c = 0;
+            ofs.write(reinterpret_cast<const char*>(&rh), sizeof(rh));
+            const char partial[3] = {1, 2, 3};
+            ofs.write(partial, 3);
+            ofs.close();
+
+            DaqVerificationResult trunc_res = verify_daq_file(trunc_path);
+            CHECK(trunc_res.header_valid);
+            CHECK(trunc_res.zero_suppressed);
+            CHECK(trunc_res.total_records == 1);
+            CHECK(trunc_res.valid_records == 0);
+            CHECK(trunc_res.corrupt_records == 1);
+            std::remove(trunc_path.c_str());
+        }
         std::remove(zs_path.c_str());
+    }
+
+    // 4. Event Builder late-arriving fragment after timeout (must drop without ghost duplicate)
+    {
+        SlabArena arena;
+        arena.initialize(64);
+        BoundedChannel<CaloRobFragment> calo_q(16);
+        BoundedChannel<MuonRobFragment> muon_q(16);
+        BoundedChannel<SlotHandle> l1_q(16);
+        EventBuilder eb;
+        eb.initialize(64, 500); // 500 us timeout
+        EventBuilderTelemetry eb_tel{};
+
+        std::jthread eb_thr([&]() {
+            eb.run(arena, calo_q, muon_q, l1_q, eb_tel);
+        });
+
+        // Push Calo fragment for event_id=42, wait past timeout, then push late Muon fragment
+        CaloRobFragment calo{};
+        calo.event_id = 42;
+        calo.ingest_timestamp_ns = 123456;
+        calo.lumi_block_id = 1;
+        CHECK(calo_q.try_push(calo));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+
+        MuonRobFragment late_muon{};
+        late_muon.event_id = 42;
+        late_muon.muon_hits[0] = 50;
+        CHECK(muon_q.try_push(late_muon));
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        calo_q.close();
+        muon_q.close();
+        eb_thr.join();
+
+        // Drain emitted slot(s) from l1_q
+        uint32_t popped = 0;
+        SlotHandle slot = INVALID_SLOT;
+        while (l1_q.try_pop(slot)) {
+            RawEventFrame* f = arena.get_frame(slot);
+            CHECK(f->event_id == 42);
+            CHECK((f->status_flags & FRAME_STATUS_PARTIAL_EB) != 0);
+            arena.release(slot);
+            ++popped;
+        }
+
+        CHECK(popped == 1); // Exactly ONE event emitted (no ghost duplicate!)
+        CHECK(eb_tel.events_assembled.load() == 1);
+        CHECK(eb_tel.partial_events.load() == 1);
+        CHECK(eb_tel.late_fragments_dropped.load() == 1);
+        CHECK(arena.allocated_count() == 0);
     }
 
     // 4. Event Builder 1% Muon ROB fault-injection test (zero leaked SlabArena slots)
