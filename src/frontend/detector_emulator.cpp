@@ -6,6 +6,7 @@
 #include <thread>
 
 #include "triggerdaq/core/thread_utils.hpp"
+#include "triggerdaq/eb/event_builder.hpp"
 
 namespace triggerdaq {
 
@@ -27,6 +28,68 @@ inline uint64_t steady_now_ns() noexcept {
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
+}
+
+inline void pace_next_event(EmulatorMode mode,
+                            double base_interval_ns,
+                            uint64_t now_ns,
+                            uint64_t& next_emit_ns,
+                            uint64_t& burst_counter,
+                            Xoshiro256StarStar& rng) noexcept {
+    if (mode == EmulatorMode::Sustained) {
+        next_emit_ns += static_cast<uint64_t>(base_interval_ns);
+        if (next_emit_ns + 5'000'000ULL < now_ns) {
+            next_emit_ns = now_ns;
+        }
+    } else if (mode == EmulatorMode::PoissonBurst) {
+        ++burst_counter;
+        const bool in_burst = (burst_counter % 10000ULL) < 2500ULL;
+        double u = rng.next_uniform();
+        if (u < 1e-6) {
+            u = 1e-6;
+        }
+        const double scale = in_burst ? 0.25 : 1.25;
+        const double delta_ns = -std::log(u) * base_interval_ns * scale;
+        next_emit_ns += static_cast<uint64_t>(delta_ns);
+        if (next_emit_ns + 5'000'000ULL < now_ns) {
+            next_emit_ns = now_ns;
+        }
+    }
+}
+
+inline bool wait_until_emit_or_stop(EmulatorMode mode,
+                                    uint64_t next_emit_ns,
+                                    std::atomic<bool>& stop_flag,
+                                    std::atomic<bool>& paused_flag,
+                                    uint64_t& now_ns) noexcept {
+    while (paused_flag.load(std::memory_order_acquire) &&
+           !stop_flag.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    if (stop_flag.load(std::memory_order_acquire)) {
+        return false;
+    }
+
+    now_ns = steady_now_ns();
+    if (mode != EmulatorMode::MaxThroughputStress) {
+        while (now_ns < next_emit_ns &&
+               !stop_flag.load(std::memory_order_acquire) &&
+               !paused_flag.load(std::memory_order_acquire)) {
+            const uint64_t wait_ns = next_emit_ns - now_ns;
+            if (wait_ns > 50'000ULL) {
+                const uint64_t sleep_us = (wait_ns - 30'000ULL) / 1000ULL;
+                std::this_thread::sleep_for(
+                    std::chrono::microseconds(sleep_us > 1000ULL ? 1000ULL : sleep_us));
+            } else {
+                cpu_pause();
+            }
+            now_ns = steady_now_ns();
+        }
+        if (stop_flag.load(std::memory_order_acquire)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 } // namespace
@@ -63,11 +126,17 @@ void DetectorEmulator::generate_frame(RawEventFrame& frame,
                                       uint64_t event_id,
                                       uint64_t bunch_crossing_id,
                                       uint64_t timestamp_ns,
-                                      Xoshiro256StarStar& rng) noexcept {
+                                      Xoshiro256StarStar& rng,
+                                      uint32_t orbit_id,
+                                      uint16_t bcid,
+                                      uint32_t lumi_block_id) noexcept {
     std::memset(&frame, 0, sizeof(RawEventFrame));
     frame.event_id = event_id;
     frame.bunch_crossing_id = bunch_crossing_id;
     frame.ingest_timestamp_ns = timestamp_ns;
+    frame.orbit_id = orbit_id;
+    frame.lumi_block_id = lumi_block_id;
+    frame.bcid = bcid;
 
     const double u = rng.next_uniform();
     TopologyTag tag = TopologyTag::Background;
@@ -93,11 +162,12 @@ void DetectorEmulator::generate_frame(RawEventFrame& frame,
             break;
         }
         case TopologyTag::DiMuon: {
+            // Correlated high-pT Z-like di-muon pair (M_inv centered around ~65-110 GeV)
             const uint32_t ch1 = rng.next_u32(static_cast<uint32_t>(MUON_CHAMBERS));
-            const uint32_t delta = 4U + rng.next_u32(7);
+            const uint32_t delta = 5U + rng.next_u32(6);
             const uint32_t ch2 = (ch1 + delta) & 15U;
-            frame.muon_hits[ch1] = static_cast<uint16_t>(28U + rng.next_u32(50));
-            frame.muon_hits[ch2] = static_cast<uint16_t>(22U + rng.next_u32(45));
+            frame.muon_hits[ch1] = static_cast<uint16_t>(35U + rng.next_u32(45));
+            frame.muon_hits[ch2] = static_cast<uint16_t>(30U + rng.next_u32(42));
             break;
         }
         case TopologyTag::LocalizedJet: {
@@ -126,12 +196,15 @@ void DetectorEmulator::generate_frame(RawEventFrame& frame,
 }
 
 void DetectorEmulator::run(std::atomic<bool>& stop_flag,
+                           std::atomic<bool>& paused_flag,
+                           std::atomic<uint32_t>& current_lumi_block,
                            SlabArena& arena,
                            BoundedChannel<SlotHandle>& l1_queue,
                            EmulatorTelemetry& telemetry,
                            EmulatorMode mode,
                            double target_rate_khz,
                            uint64_t seed,
+                           const LhcFillingScheme& filling_scheme,
                            bool pin_thread,
                            uint32_t core_idx) noexcept {
     if (pin_thread) {
@@ -139,8 +212,8 @@ void DetectorEmulator::run(std::atomic<bool>& stop_flag,
     }
 
     Xoshiro256StarStar rng(seed);
+    LhcOrbitClock clock{};
     uint64_t event_id = 1;
-    uint64_t bx_id = 0;
 
     const double rate_hz = target_rate_khz > 0.001 ? target_rate_khz * 1000.0 : 1000.0;
     const double base_interval_ns = 1e9 / rate_hz;
@@ -149,30 +222,13 @@ void DetectorEmulator::run(std::atomic<bool>& stop_flag,
     uint64_t burst_counter = 0;
 
     while (!stop_flag.load(std::memory_order_acquire)) {
-        uint64_t now_ns = steady_now_ns();
-
-        // Intentional inter-arrival rate pacing — completely decoupled from dead-time accounting.
-        // Uses hybrid coarse sleep (>50 us) + cpu_pause() spin-wait (<=50 us) to prevent rate drift.
-        if (mode != EmulatorMode::MaxThroughputStress) {
-            while (now_ns < next_emit_ns && !stop_flag.load(std::memory_order_acquire)) {
-                const uint64_t wait_ns = next_emit_ns - now_ns;
-                if (wait_ns > 50'000ULL) {
-                    const uint64_t sleep_us = (wait_ns - 30'000ULL) / 1000ULL;
-                    std::this_thread::sleep_for(
-                        std::chrono::microseconds(sleep_us > 1000ULL ? 1000ULL : sleep_us));
-                } else {
-                    cpu_pause();
-                }
-                now_ns = steady_now_ns();
-            }
-            if (stop_flag.load(std::memory_order_acquire)) {
-                break;
-            }
+        uint64_t now_ns = 0;
+        if (!wait_until_emit_or_stop(mode, next_emit_ns, stop_flag, paused_flag, now_ns)) {
+            break;
         }
 
         const SlotHandle slot = arena.acquire();
         if (slot == INVALID_SLOT) {
-            // True detector dead-time: SlabArena exhaustion only
             const uint64_t dt_start = steady_now_ns();
             telemetry.dead_time_events.fetch_add(1, std::memory_order_relaxed);
             std::this_thread::yield();
@@ -183,8 +239,13 @@ void DetectorEmulator::run(std::atomic<bool>& stop_flag,
             continue;
         }
 
+        clock.advance_to_next_filled(filling_scheme);
+        const uint64_t global_bx =
+            static_cast<uint64_t>(clock.orbit_id) * filling_scheme.bunches_per_orbit + clock.bcid;
+        const uint32_t lb_id = current_lumi_block.load(std::memory_order_acquire);
+
         RawEventFrame* frame = arena.get_frame(slot);
-        generate_frame(*frame, event_id++, bx_id++, now_ns, rng);
+        generate_frame(*frame, event_id++, global_bx, now_ns, rng, clock.orbit_id, clock.bcid, lb_id);
 
         const auto tag = static_cast<TopologyTag>(frame->topology_tag);
         telemetry.events_generated.fetch_add(1, std::memory_order_relaxed);
@@ -198,25 +259,85 @@ void DetectorEmulator::run(std::atomic<bool>& stop_flag,
             cpu_pause();
         }
 
-        if (mode == EmulatorMode::Sustained) {
-            next_emit_ns += static_cast<uint64_t>(base_interval_ns);
-            if (next_emit_ns + 5'000'000ULL < now_ns) {
-                next_emit_ns = now_ns;
-            }
-        } else if (mode == EmulatorMode::PoissonBurst) {
-            ++burst_counter;
-            const bool in_burst = (burst_counter % 10000ULL) < 2500ULL;
-            double u = rng.next_uniform();
-            if (u < 1e-6) {
-                u = 1e-6;
-            }
-            const double scale = in_burst ? 0.25 : 1.25;
-            const double delta_ns = -std::log(u) * base_interval_ns * scale;
-            next_emit_ns += static_cast<uint64_t>(delta_ns);
-            if (next_emit_ns + 5'000'000ULL < now_ns) {
-                next_emit_ns = now_ns;
-            }
+        pace_next_event(mode, base_interval_ns, now_ns, next_emit_ns, burst_counter, rng);
+    }
+}
+
+void DetectorEmulator::run_split_robs(std::atomic<bool>& stop_flag,
+                                      std::atomic<bool>& paused_flag,
+                                      std::atomic<uint32_t>& current_lumi_block,
+                                      BoundedChannel<CaloRobFragment>& calo_queue,
+                                      BoundedChannel<MuonRobFragment>& muon_queue,
+                                      EmulatorTelemetry& telemetry,
+                                      EmulatorMode mode,
+                                      double target_rate_khz,
+                                      uint64_t seed,
+                                      double muon_drop_rate,
+                                      const LhcFillingScheme& filling_scheme,
+                                      bool pin_thread,
+                                      uint32_t core_idx) noexcept {
+    if (pin_thread) {
+        pin_current_thread(core_idx);
+    }
+
+    Xoshiro256StarStar rng(seed);
+    LhcOrbitClock clock{};
+    uint64_t event_id = 1;
+
+    const double rate_hz = target_rate_khz > 0.001 ? target_rate_khz * 1000.0 : 1000.0;
+    const double base_interval_ns = 1e9 / rate_hz;
+
+    uint64_t next_emit_ns = steady_now_ns();
+    uint64_t burst_counter = 0;
+
+    RawEventFrame scratch{};
+    while (!stop_flag.load(std::memory_order_acquire)) {
+        uint64_t now_ns = 0;
+        if (!wait_until_emit_or_stop(mode, next_emit_ns, stop_flag, paused_flag, now_ns)) {
+            break;
         }
+
+        clock.advance_to_next_filled(filling_scheme);
+        const uint64_t global_bx =
+            static_cast<uint64_t>(clock.orbit_id) * filling_scheme.bunches_per_orbit + clock.bcid;
+        const uint32_t lb_id = current_lumi_block.load(std::memory_order_acquire);
+        const uint64_t eid = event_id++;
+
+        generate_frame(scratch, eid, global_bx, now_ns, rng, clock.orbit_id, clock.bcid, lb_id);
+
+        CaloRobFragment calo{};
+        calo.event_id = eid;
+        calo.bunch_crossing_id = global_bx;
+        calo.ingest_timestamp_ns = now_ns;
+        calo.orbit_id = clock.orbit_id;
+        calo.lumi_block_id = lb_id;
+        calo.bcid = clock.bcid;
+        calo.topology_tag = scratch.topology_tag;
+        std::memcpy(calo.calorimeter_cells, scratch.calorimeter_cells, sizeof(calo.calorimeter_cells));
+
+        const bool drop_muon = (muon_drop_rate > 0.0) && (rng.next_uniform() < muon_drop_rate);
+        if (!calo_queue.try_push(calo)) {
+            telemetry.dead_time_events.fetch_add(1, std::memory_order_relaxed);
+            cpu_pause();
+            continue;
+        }
+
+        const auto tag = static_cast<TopologyTag>(scratch.topology_tag);
+        telemetry.events_generated.fetch_add(1, std::memory_order_relaxed);
+        if (tag == TopologyTag::DiMuon || tag == TopologyTag::LocalizedJet) {
+            telemetry.signal_generated.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        if (!drop_muon) {
+            MuonRobFragment muon{};
+            muon.event_id = eid;
+            muon.orbit_id = clock.orbit_id;
+            muon.bcid = clock.bcid;
+            std::memcpy(muon.muon_hits, scratch.muon_hits, sizeof(muon.muon_hits));
+            muon_queue.push_blocking(muon);
+        }
+
+        pace_next_event(mode, base_interval_ns, now_ns, next_emit_ns, burst_counter, rng);
     }
 }
 
