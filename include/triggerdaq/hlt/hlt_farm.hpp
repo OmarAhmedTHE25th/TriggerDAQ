@@ -23,8 +23,7 @@ public:
 
     void initialize(uint32_t num_workers, bool pin_threads);
 
-    void start(std::atomic<bool>& stop_flag,
-               SlabArena& arena,
+    void start(SlabArena& arena,
                BoundedChannel<SlotHandle>& hlt_queue,
                BoundedChannel<SlotHandle>& storage_queue,
                const AtomicMenuSlot& menu_slot);
@@ -38,7 +37,6 @@ public:
 
 private:
     void worker_loop(uint32_t worker_id,
-                     std::atomic<bool>& stop_flag,
                      SlabArena& arena,
                      BoundedChannel<SlotHandle>& hlt_queue,
                      BoundedChannel<SlotHandle>& storage_queue,
