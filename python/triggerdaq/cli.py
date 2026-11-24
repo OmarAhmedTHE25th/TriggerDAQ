@@ -7,7 +7,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import List
+from typing import List, Sequence
 
 from ._triggerdaq_ext import (
     EmulatorMode,
@@ -34,6 +34,28 @@ MODE_MAP = {
     "burst": EmulatorMode.PoissonBurst,
     "stress": EmulatorMode.MaxThroughputStress,
 }
+
+SPARK_CHARS = " ▁▂▃▄▅▆▇█"
+
+
+def format_dimuon_bar_chart(hist: Sequence[int]) -> str:
+    """Renders a compact 32-bin (0-160 GeV) Di-Muon invariant mass ASCII/Unicode bar chart."""
+    if not hist:
+        return "[empty]"
+    # Skip bin 0 (0-5 GeV, mostly non-dimuon jet events) when computing physics peak scale
+    peak = max(hist[1:]) if len(hist) > 1 else max(hist)
+    if peak == 0:
+        peak = max(hist)
+    if peak == 0:
+        return "0 GeV |" + (" " * len(hist)) + "| 160 GeV"
+    bars = []
+    for idx, val in enumerate(hist):
+        if idx == 0:
+            lvl = min(len(SPARK_CHARS) - 1, int(round((min(val, peak) / peak) * (len(SPARK_CHARS) - 1))))
+        else:
+            lvl = min(len(SPARK_CHARS) - 1, int(round((val / peak) * (len(SPARK_CHARS) - 1))))
+        bars.append(SPARK_CHARS[lvl])
+    return f"0 GeV |{''.join(bars)}| 160 GeV (peak bin={peak:,})"
 
 
 def _build_rich_dashboard(snap: TelemetrySnapshot, menu_spec: TriggerMenuSpec, mode_name: str):
@@ -71,7 +93,7 @@ def _build_rich_dashboard(snap: TelemetrySnapshot, menu_spec: TriggerMenuSpec, m
         "Arena Peak / Cap",
         f"{snap.arena_peak:,} / {snap.arena_capacity:,} (live {snap.arena_allocated:,})",
         "Written (CRC32C)",
-        f"{snap.bytes_written / (1024*1024):.2f} MiB ({snap.events_written:,} ev, err={snap.storage_write_errors})",
+        f"{snap.bytes_written / (1024*1024):.2f} MiB ({snap.compression_ratio:.2f}x, err={snap.storage_write_errors})",
     )
 
     prescales: List[str] = []
@@ -80,7 +102,18 @@ def _build_rich_dashboard(snap: TelemetrySnapshot, menu_spec: TriggerMenuSpec, m
         cnt = snap.rule_accept_counts[idx] if idx < len(snap.rule_accept_counts) else 0
         prescales.append(f"{rule.name}: {pf:.2f}x ({cnt:,})")
 
-    table.add_row("Active Prescales", " | ".join(prescales), "L1 Budget Violations", f"{snap.l1_budget_violations:,}")
+    table.add_row(
+        "Active Prescales",
+        " | ".join(prescales),
+        "LumiBlock / EB Partial",
+        f"LB #{snap.current_lumi_block} | partial={snap.eb_partial_events:,}",
+    )
+    table.add_row(
+        "DQM Di-Muon M_inv",
+        format_dimuon_bar_chart(snap.dqm_dimuon_mass_hist),
+        "L1 Budget Violations",
+        f"{snap.l1_budget_violations:,}",
+    )
 
     title = (
         f"TriggerDAQ Live Telemetry  |  mode={mode_name}  |  menu={menu_spec.name}  "
@@ -95,7 +128,7 @@ def _format_ansi_line(snap: TelemetrySnapshot, menu_spec: TriggerMenuSpec) -> st
         for i, r in enumerate(menu_spec.rules)
     )
     return (
-        f"[t={snap.elapsed_seconds:5.2f}s] "
+        f"[t={snap.elapsed_seconds:5.2f}s LB={snap.current_lumi_block}] "
         f"In={snap.input_rate_hz/1e3:7.1f} kHz | "
         f"L1={snap.l1_rate_hz/1e3:6.1f} kHz (p99={snap.l1_latency_ns.p99:5.0f}ns) | "
         f"HLT={snap.hlt_rate_hz/1e3:5.1f} kHz (p99={snap.hlt_latency_us.p99:5.2f}us) | "
@@ -129,7 +162,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--output", type=str, default="", help="Optional output .daq binary file path")
     parser.add_argument("--report-json", type=str, default="", help="Optional JSON telemetry summary path")
-    parser.add_argument("--pin-threads", action="store_true", help="Pin HLT worker threads to CPU cores")
+    parser.add_argument("--zero-suppression", action="store_true", help="Enable Zero-Suppression storage codec")
+    parser.add_argument("--zs-threshold", type=int, default=20, help="ZS calorimeter pedestal threshold (MeV)")
+    parser.add_argument("--enable-eb", action="store_true", help="Enable sub-detector Event Builder stage")
+    parser.add_argument("--eb-drop-rate", type=float, default=0.0, help="Muon ROB fragment drop rate for fault injection")
+    parser.add_argument("--lumi-interval", type=float, default=1.0, help="LumiBlock duration in seconds")
+    parser.add_argument("--pin-threads", action="store_true", help="Pin pipeline threads to CPU cores")
     parser.add_argument("--seed", type=int, default=42, help="Deterministic PRNG seed")
     parser.add_argument("--no-rich", action="store_true", help="Force plain ANSI output")
     args = parser.parse_args(argv)
@@ -146,9 +184,14 @@ def main(argv: list[str] | None = None) -> int:
     cfg.pin_threads = args.pin_threads
     cfg.seed = args.seed
     cfg.output_path = args.output
+    cfg.enable_zero_suppression = args.zero_suppression
+    cfg.zs_pedestal_threshold = args.zs_threshold
+    cfg.enable_event_builder = args.enable_eb
+    cfg.eb_muon_drop_rate = args.eb_drop_rate
+    cfg.lumi_block_interval_s = args.lumi_interval
 
     engine = TriggerEngine()
-    engine.initialize(cfg, cpp_menu)
+    engine.configure(cfg, cpp_menu)
 
     use_rich = HAS_RICH and (not args.no_rich) and sys.stdout.isatty()
     engine.start()
@@ -173,8 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         engine.stop()
 
     final_snap = engine.snapshot()
+    lbs = engine.lumi_blocks()
     print("\n=== TriggerDAQ Final Summary ===")
-    print(f"  Duration:       {final_snap.elapsed_seconds:.3f} s  (mode={args.mode}, menu={args.menu})")
+    print(f"  Duration:       {final_snap.elapsed_seconds:.3f} s  (mode={args.mode}, menu={args.menu}, LBs={len(lbs)})")
     print(f"  Generated:      {final_snap.events_generated:,} ({final_snap.input_rate_hz/1e3:,.2f} kHz)")
     print(f"  L1 Accepted:    {final_snap.l1_accepted:,} ({final_snap.l1_rate_hz/1e3:,.2f} kHz)")
     print(f"  HLT Accepted:   {final_snap.hlt_accepted:,} ({final_snap.hlt_rate_hz/1e3:,.2f} kHz)")
@@ -195,14 +239,21 @@ def main(argv: list[str] | None = None) -> int:
         f"  Signal Purity:  {final_snap.signal_purity*100:.2f}%  |  "
         f"Efficiency: {final_snap.signal_efficiency*100:.2f}%"
     )
+    print(f"  DQM Di-Muon:    {format_dimuon_bar_chart(final_snap.dqm_dimuon_mass_hist)}")
     print(
         f"  Arena Peak:     {final_snap.arena_peak:,} / {final_snap.arena_capacity:,}  "
         f"(leaked: {final_snap.arena_allocated})"
     )
+    if args.enable_eb:
+        print(
+            f"  Event Builder:  assembled={final_snap.eb_events_assembled:,}  "
+            f"partial={final_snap.eb_partial_events:,}  timeouts={final_snap.eb_timeout_events:,}"
+        )
     if args.output:
         print(
             f"  DAQ Output:     {args.output} ({final_snap.events_written:,} events, "
-            f"{final_snap.bytes_written:,} bytes, errors={final_snap.storage_write_errors})"
+            f"{final_snap.bytes_written:,} bytes, ZS={final_snap.compression_ratio:.2f}x, "
+            f"errors={final_snap.storage_write_errors})"
         )
     if final_snap.storage_write_errors > 0:
         print(
@@ -212,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.report_json:
         report = final_snap.to_dict()
+        report["lumi_blocks"] = [lb.to_dict() for lb in lbs]
         report["config"] = {
             "duration": args.duration,
             "rate_khz": args.rate_khz,
@@ -220,6 +272,8 @@ def main(argv: list[str] | None = None) -> int:
             "l1_budget_us": args.l1_budget_us,
             "mode": args.mode,
             "menu": args.menu,
+            "zero_suppression": args.zero_suppression,
+            "enable_event_builder": args.enable_eb,
             "avx2": has_avx2_kernel(),
         }
         Path(args.report_json).write_text(json.dumps(report, indent=2), encoding="utf-8")
