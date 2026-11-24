@@ -4,11 +4,13 @@
 #include <atomic>
 #include <bit>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 namespace triggerdaq {
 
 struct LatencyStats {
+    double min{0.0};
     double p50{0.0};
     double p95{0.0};
     double p99{0.0};
@@ -18,6 +20,7 @@ struct LatencyStats {
 
 // Fixed-size, zero-allocation log-linear latency histogram.
 // Linear for [0, 64), then 16 sub-buckets per power-of-two decade up to ~2^30.
+// Percentiles use within-bucket linear interpolation clamped to [min, max].
 class LatencyHistogram {
 public:
     static constexpr size_t NUM_LINEAR = 64;
@@ -32,19 +35,23 @@ public:
 
     [[nodiscard]] LatencyStats compute_stats() const noexcept;
     [[nodiscard]] uint64_t total_count() const noexcept { return total_count_; }
+    [[nodiscard]] uint64_t min_value() const noexcept { return total_count_ > 0 ? min_value_ : 0; }
     [[nodiscard]] uint64_t max_value() const noexcept { return max_value_; }
 
 private:
     friend class AtomicLatencyHistogram;
     static size_t value_to_bucket(uint64_t value) noexcept;
+    static double bucket_lower_bound(size_t bucket) noexcept;
     static double bucket_upper_bound(size_t bucket) noexcept;
 
     std::array<uint64_t, NUM_BUCKETS> buckets_{};
     uint64_t total_count_{0};
+    uint64_t min_value_{std::numeric_limits<uint64_t>::max()};
     uint64_t max_value_{0};
 };
 
-// Thread-local/per-worker atomic latency histogram (lock-free single-writer, relaxed multi-reader).
+// Single-writer, multi-reader seqlock-protected latency histogram.
+// Prevents transient torn percentile reads during concurrent snapshot aggregation.
 class AtomicLatencyHistogram {
 public:
     void reset() noexcept;
@@ -54,8 +61,10 @@ public:
 private:
     static size_t value_to_bucket(uint64_t value) noexcept;
 
+    alignas(64) std::atomic<uint64_t> seq_{0};
     std::array<std::atomic<uint64_t>, LatencyHistogram::NUM_BUCKETS> buckets_{};
     std::atomic<uint64_t> total_count_{0};
+    std::atomic<uint64_t> min_value_{std::numeric_limits<uint64_t>::max()};
     std::atomic<uint64_t> max_value_{0};
 };
 
@@ -88,6 +97,7 @@ struct TelemetrySnapshot {
     uint64_t l1_budget_violations{0};
     uint64_t bytes_written{0};
     uint64_t events_written{0};
+    uint64_t storage_write_errors{0};
 
     uint64_t arena_allocated{0};
     uint64_t arena_peak{0};
