@@ -7,6 +7,8 @@
 #include <thread>
 #include <type_traits>
 
+#include "triggerdaq/core/thread_utils.hpp"
+
 namespace triggerdaq {
 
 // Lock-free cache-padded bounded MPMC/SPSC ring buffer (Vyukov algorithm).
@@ -59,12 +61,14 @@ public:
     }
 
     [[nodiscard]] bool try_push(const T& item) noexcept {
+        using SignedSize = std::make_signed_t<size_t>;
         Cell* cell = nullptr;
         size_t pos = enqueue_pos_.load(std::memory_order_relaxed);
         for (;;) {
             cell = &buffer_[pos & mask_];
             const size_t seq = cell->sequence.load(std::memory_order_acquire);
-            const intptr_t diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+            // Unsigned subtraction first prevents signed integer overflow UB on wraparound
+            const auto diff = static_cast<SignedSize>(seq - pos);
             if (diff == 0) {
                 if (enqueue_pos_.compare_exchange_weak(
                         pos, pos + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
@@ -85,18 +89,26 @@ public:
     // Lossless push used during ordered shutdown drain so downstream stages
     // finish consuming without dropping already-accepted events.
     void push_blocking(const T& item) noexcept {
+        uint32_t spins = 0;
         while (!try_push(item)) {
-            std::this_thread::yield();
+            if (spins < 32U) {
+                cpu_pause();
+            } else {
+                std::this_thread::yield();
+            }
+            ++spins;
         }
     }
 
     [[nodiscard]] bool try_pop(T& item) noexcept {
+        using SignedSize = std::make_signed_t<size_t>;
         Cell* cell = nullptr;
         size_t pos = dequeue_pos_.load(std::memory_order_relaxed);
         for (;;) {
             cell = &buffer_[pos & mask_];
             const size_t seq = cell->sequence.load(std::memory_order_acquire);
-            const intptr_t diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos + 1);
+            // Unsigned subtraction first prevents signed integer overflow UB on wraparound
+            const auto diff = static_cast<SignedSize>(seq - (pos + 1));
             if (diff == 0) {
                 if (dequeue_pos_.compare_exchange_weak(
                         pos, pos + 1, std::memory_order_relaxed, std::memory_order_relaxed)) {
