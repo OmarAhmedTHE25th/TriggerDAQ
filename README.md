@@ -11,44 +11,53 @@ Modeled on CERN's ATLAS/CMS Level-1 (L1) and High-Level Trigger (HLT) architectu
 ```text
 +=======================================================================================+
 |                       PYTHON 3.12+ CONTROL & TELEMETRY PLANE                          |
-|  [Declarative TriggerMenu]    [Live Rich/ANSI Dashboard CLI]    [DaqReader / NumPy]   |
-|         |  update_menu()               ^  snapshot() (<1 us)          ^  zero-copy    |
-|         |  (atomic swap)               |  (lock-free atomics)         |  CRC32C view  |
-+=========|==============================|==============================|===============+
-          |          nanobind (_triggerdaq_ext, GIL released)           |
-+=========v==============================|==============================|===============+
-|                        C++20 ZERO-ALLOCATION HOT-PATH CORE            |               |
-|                                                                       |               |
-|  +-------------------+   SlotHandle   +-----------------------+       |               |
-|  | Detector Emulator | -------------> |    L1 SIMD Trigger    |       |               |
-|  | (xoshiro256**)    |  BoundedChan   | AVX2 / Scalar Kernels |       |               |
-|  | ~95% Bg, 1.5% DiMu|                | + Closed-Loop PI      |       |               |
-|  | 2% Jet, 1.5% PU   |                |   Prescaler (75% WM)  |       |               |
-|  +---------+---------+                +-----------+-----------+       |               |
-|            | acquire()                            | SlotHandle        |               |
-|            v                                      v (BoundedChan)     |               |
-|  +-------------------+                +-----------------------+       |               |
-|  |    SlabArena      |                |   HLT Worker Farm     |       |               |
-|  | 64B-aligned pool  | <------------- | W std::jthreads       |       |               |
-|  | ABA-safe freelist |  release()     | Cluster/DiMu Recon +  |       |               |
-|  | 256B RawEventFrame|  on reject     | Quantized Int8 MLP    |       |               |
-|  +---------^---------+                +-----------+-----------+       |               |
-|            |                                      | SlotHandle        |               |
-|            | release()                            v (BoundedChan)     |               |
-|            |                          +-----------------------+       |               |
-|            +------------------------- |  Async EventWriter    | ------+               |
-|                                       | Double-Buffered 256KB |  .daq binary file     |
-|                                       | Hardware SSE4.2 CRC32C|  [32B hdr][296B recs] |
-|                                       +-----------------------+                       |
+|  [Run Control FSM & Menu]  [Live Rich/ANSI + DQM Bar Chart]  [DaqReader / NumPy View] |
+|    configure/start/pause         ^  snapshot() (<1 us)          ^  zero-copy CRC32C   |
+|    update_menu() (seqlock)       |  LumiBlock ledger            |  raw & ZS decode    |
++=========|========================|==============================|=====================+
+          |          nanobind (_triggerdaq_ext, GIL released)     |
++=========v========================|==============================|=====================+
+|                        C++20 ZERO-ALLOCATION HOT-PATH CORE      |                     |
+|                                                                 |                     |
+|  +-----------------------+   Calo/Muon ROBs  +------------------+----+                |
+|  |   Detector Emulator   | ----------------> |  Event Builder (opt)  |                |
+|  |  xoshiro256** + LHC   |   (or direct L1)  |  Matches Calo & Muon  |                |
+|  |  Orbit/BCID Filling   |                   |  by event_id + timeout|                |
+|  |  (3564 BCID, abort gap)                   |  -> PARTIAL_EB flag   |                |
+|  +-----------+-----------+                   +----------+------------+                |
+|              | acquire()                                | SlotHandle (BoundedChan)    |
+|              v                                          v                             |
+|  +-----------------------+                   +-----------------------+                |
+|  |      SlabArena        |                   |    L1 SIMD Trigger    |                |
+|  |  64B-aligned 256B pool| <---------------- | AVX2 / Scalar Kernels |                |
+|  |  128-bit CAS freelist |    release()      | + Closed-Loop PI      |                |
+|  |  (64-bit tag, ABA-safe)    on reject      |   Prescaler (EMA+75%) |                |
+|  +-----------^-----------+                   +----------+------------+                |
+|              |                                          | SlotHandle (lossless drain) |
+|              |                                          v                             |
+|              |                               +-----------------------+                |
+|              |                               |   HLT Worker Farm     |                |
+|              |                               | W std::jthreads       |                |
+|              |                               | Recon + Int8 MLP +    |                |
+|              |                               | Live DQM Histograms   |                |
+|              |                               +----------+------------+                |
+|              | release()                                | SlotHandle (lossless drain) |
+|              | post-CRC32C                              v                             |
+|              +------------------------------ +-----------------------+                |
+|                                              |  Async EventWriter    | --- .daq v2 -->|
+|                                              | Double-Buffered 256KB | (raw or ZS     |
+|                                              | SSE4.2 CRC32C + EINTR |  1.66x codec)  |
+|                                              +-----------------------+                |
 +=======================================================================================+
 ```
 
-### Engineering Guarantees
-- **Zero Hot-Path Allocations:** After `TriggerEngine::initialize()`, no thread on the Frontend → L1 → HLT → Storage path allocates heap memory or resizes STL containers. Events travel solely as 32-bit `SlotHandle` descriptors referencing pre-allocated, 64-byte-aligned `RawEventFrame` (256 B) and `HltDecisionMetadata` (32 B) slots in `SlabArena`.
-- **GIL-Free Execution:** All `nanobind` execution entry points (`start`, `stop`, `run_for_seconds`, `verify_and_map_daq`) release the Python GIL (`nb::gil_scoped_release`). Telemetry polling copies an atomic snapshot in `< 1 µs` without locking worker threads.
-- **Bit-Identical SIMD Dispatch:** Compile-time AVX2 L1 calorimeter & muon reduction kernels (`extract_l1_features_avx2`) are verified bit-identical to the portable C++20 scalar implementation across 50,000 full-range frames (`test_l1_simd`).
-- **Closed-Loop PI Backpressure:** Monitors HLT queue fill ratio (`> 75%` watermark) and dynamically scales prescale factors on `Low`/`Normal`/`High` priority rules using a deterministic fractional phase accumulator while locking `Critical` discovery rules at `1.0x`.
-- **Hardware-Accelerated CRC32C Storage:** Double-buffered staging writer frames every accepted event (`[4B length][4B crc32c][256B RawEventFrame][32B HltDecisionMetadata]`) using SSE4.2 `_mm_crc32_u64` (with Castagnoli software fallback), and `verify_and_map_daq()` exposes verified records directly as a zero-copy NumPy structured array.
+### Engineering & CERN-Domain Guarantees
+- **Zero Hot-Path Allocations:** After `TriggerEngine::configure()`, no thread on the Frontend → Event Builder → L1 → HLT → Storage path allocates heap memory. Events travel solely as 32-bit `SlotHandle` descriptors backed by a 64-byte-aligned `SlabArena` with inline 128-bit double-word CAS (`-mcx16`, 64-bit monotonic tag).
+- **Race-Free, Sanitizer-Verified Concurrency:** Verified **100% clean** under both **AddressSanitizer/UBSan** and **ThreadSanitizer (TSan)**. `AtomicMenuSlot` uses atomic-word seqlock transfers returning `TriggerMenu` by value; `AtomicLatencyHistogram` uses seqlock snapshots with within-bucket linear interpolation; `BoundedChannel` uses unsigned wraparound-safe arithmetic, atomic `size_`, and explicit 4-stage lossless EOS draining.
+- **LHC Orbit/BCID Timing & Run Control FSM:** Configurable LHC 25 ns bunch-train filling scheme (`3564` BCIDs/orbit, abort gap `[3444, 3563]`), validated `RunState` FSM (`Initial → Configured → Running ⇄ Paused → Stopped → Initial`), and periodic Luminosity Block (`LumiBlockRecord`) accounting ledger exported in JSON reports.
+- **Live DQM Physics Histograms:** Per-worker atomic 32-bin Di-Muon invariant mass (`0–160 GeV`), 16-bin Jet $E_T$, and 64-cell calorimeter occupancy maps merged into `TelemetrySnapshot` and rendered as a live Unicode bar chart in the CLI dashboard.
+- **Zero-Suppression (ZS) Storage Codec (Schema v2):** Optional pedestal zero-suppression (`--zero-suppression`) stores only above-threshold `(cell_idx, energy)` pairs with hardware SSE4.2 CRC32C framing (`1.66x` compression), transparently decompressed by `verify_daq_file()` / `DaqReader` into import-time C++-validated `RECORD_DTYPE` NumPy arrays.
+- **Sub-Detector Event Builder (`--enable-eb`):** Splits Frontend output into independent Calorimeter and Muon ROB streams matched by `event_id` in a pre-allocated assembly table, flagging timed-out partial events (`FRAME_STATUS_PARTIAL_EB`) with zero `SlabArena` slot leaks.
 
 ---
 
@@ -62,43 +71,58 @@ ctest --test-dir build --output-on-failure -V
 ./build/bench_pipeline
 ```
 
-### 2. Python Control Plane & `nanobind` Extension
+### 2. Sanitizer CI Matrix (ASan/UBSan & TSan)
+```bash
+# AddressSanitizer + UndefinedBehaviorSanitizer
+cmake -B build_asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+cmake --build build_asan -j && ctest --test-dir build_asan --output-on-failure
+
+# ThreadSanitizer
+cmake -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+  -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
+  -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+cmake --build build_tsan -j && setarch x86_64 -R ctest --test-dir build_tsan --output-on-failure
+```
+
+### 3. Python Control Plane & CLI
 ```bash
 pip install -e .
 pytest -v tests/python/
-```
 
-### 3. CLI Runner & Binary `.daq` Inspector
-```bash
-# Run a 5-second max-throughput stress run and record CRC32C-framed events
-triggerdaq --mode stress --duration 5 --menu physics_nominal --output run.daq --report-json report.json
+# Run 5s stress test with Zero-Suppression storage & JSON LumiBlock report
+triggerdaq --mode stress --duration 5 --zero-suppression --output run_zs.daq --report-json report.json
 
-# Verify CRC32C checksums and inspect topology purity
-triggerdaq-inspect run.daq
+# Verify CRC32C checksums, decompress ZS records, and inspect topology purity
+triggerdaq-inspect run_zs.daq
 ```
 
 ---
 
 ## Benchmark Results
 
-Measured on Ubuntu 24.04 (WSL2, `g++ 13.3.0`, `-std=c++20 -O3 -mavx2 -msse4.2`, 4 HLT workers, 65,536 `SlabArena` slots, `physics_nominal` menu):
+Measured on Ubuntu 24.04 (WSL2, `g++ 13.3.0`, `-std=c++20 -O3 -mavx2 -msse4.2 -mcx16`, 4 HLT workers, 65,536 `SlabArena` slots, `physics_nominal` menu):
 
 ### Pure C++20 Pipeline (`./build/bench_pipeline`)
-| Mode | Input Rate | L1 Accept | HLT Accept | Dead-Time | L1 Latency (p50 / p99 / p99.9) | HLT Latency (p50 / p99 / p99.9) | Signal Purity / Eff | Leaked Slots |
-| :--- | ---: | ---: | ---: | ---: | :---: | :---: | :---: | ---: |
-| **Sustained (200 kHz)** | 175.35 kHz | 8.76 kHz | 6.12 kHz | 0.00% | 200 ns / 512 ns / 3,200 ns | 0.96 µs / 2.94 µs / 73.73 µs | 100.00% / 99.82% | 0 |
-| **PoissonBurst (250 kHz)** | 249.16 kHz | 12.56 kHz | 8.76 kHz | 0.00% | 192 ns / 352 ns / 1,472 ns | 0.93 µs / 2.05 µs / 22.53 µs | 100.00% / 99.86% | 0 |
-| **MaxThroughputStress** | **1,558.37 kHz** | 77.94 kHz | 54.52 kHz | 0.00% | **184 ns / 304 ns / 832 ns** | **0.83 µs / 1.47 µs / 20.48 µs** | **100.00% / 99.86%** | 0 |
+| Mode | Input Rate | L1 / HLT Accept | Dead-Time | L1 Latency (p50 / p99) | HLT Latency (p50 / p99) | Purity / Eff | ZS Ratio | LumiBlocks | EB Timeout Rate | Leaked |
+| :--- | ---: | ---: | ---: | :---: | :---: | :---: | ---: | ---: | ---: | ---: |
+| **Sustained (200 kHz)** | 198.58 kHz | 9.91 / 6.91 kHz | 0.00% | 285 ns / 741 ns | 1.12 µs / 4.45 µs | 100.00% / 99.84% | 1.00x (OFF) | 2 | N/A | 0 |
+| **PoissonBurst (250 kHz, ZS)** | 247.30 kHz | 12.47 / 8.70 kHz | 0.00% | 262 ns / 605 ns | 0.99 µs / 2.77 µs | 100.00% / 99.86% | **1.66x** | 2 | N/A | 0 |
+| **MaxThroughputStress (ZS)** | **1,214.43 kHz** | 60.84 / 42.56 kHz | 0.00% | **277 ns / 696 ns** | **0.94 µs / 2.18 µs** | **100.00% / 99.86%** | **1.66x** | 3 | N/A | 0 |
+| **EventBuilder (200 kHz, 1% drop)** | 180.37 kHz | 9.08 / 6.31 kHz | 0.00% | 268 ns / 692 ns | 1.06 µs / 3.60 µs | 100.00% / 99.44% | **1.66x** | 2 | **1.03%** | 0 |
 
-### End-to-End Python CLI Stress Run with Disk `.daq` Storage (`triggerdaq --mode stress --duration 5`)
-- **Generated:** `5,879,704` frames (`1,141.98 kHz`)
-- **L1 Accepted:** `295,008` (`57.30 kHz`, `p50=200 ns`, `p99=432 ns`, `p99.9=1,472 ns`)
-- **HLT Accepted & Written:** `206,703` (`40.15 kHz`, `61.18 MB` CRC32C-framed `.daq`, `p50=0.86 µs`, `p99=1.86 µs`)
-- **Dead-Time:** `0.015%` (`866` drops) | **Leaked Arena Slots:** `0`
-- **Integrity (`triggerdaq-inspect`):** `206,703 / 206,703` valid records (`0` corrupt), `100.00%` signal purity (`88,481` DiMuon + `118,222` LocalizedJet, `0` Background, `0` PileupNoise).
+### End-to-End Python CLI Stress Run with Zero-Suppressed Disk Storage (`triggerdaq --mode stress --duration 5 --zero-suppression`)
+- **Generated:** `5,312,240` frames (`1,052.25 kHz`, `6` LumiBlocks)
+- **L1 Accepted:** `262,028` (`51.90 kHz`, `p50=266.0 ns`, `p99=781.7 ns`)
+- **HLT Accepted & Written:** `183,687` (`36.38 kHz`, `32.80 MB` CRC32C-framed ZS `.daq`, **`1.66x`** compression, `0` write errors)
+- **DQM Di-Muon Invariant Mass (`0–160 GeV`):** `0 GeV |█           ▁▂▃▅▆▇██▇▇▆▅▄▃▂▁▁   | 160 GeV`
+- **Integrity (`triggerdaq-inspect`):** `183,687 / 183,687` valid records (`0` corrupt, schema v2 ZS=ON, `LumiBlocks 1..6`, `BCID 0..3443`, `100.00%` signal purity: `78,677` DiMuon + `105,010` LocalizedJet, `0` Background, `0` PileupNoise).
 
 ---
 
 ## Verification Summary
-- **C++ (`ctest`):** 4/4 passing (`test_slab_arena` 10M cycles across 8 threads, `test_l1_simd` AVX2 vs. scalar 50k frames bit-identical, `test_prescaler` PI backpressure & Critical 1.0x lock, `test_storage_crc` RFC 3720 + bit-flip corruption detection).
-- **Python (`pytest`):** 4/4 passing (`test_engine_lifecycle_and_gil_release`, `test_lock_free_telemetry_polling`, `test_runtime_menu_hot_reload`, `test_daq_write_read_and_corruption_detection`).
+- **C++ Release (`ctest`):** **6/6 passing** (`test_slab_arena`, `test_l1_simd`, `test_prescaler`, `test_storage_crc`, `test_shutdown_drain`, `test_cern_upgrades`).
+- **ASan + UBSan (`ctest`):** **6/6 passing** (0 memory errors, 0 leaks, 0 undefined behavior).
+- **ThreadSanitizer (`ctest`):** **6/6 passing** (0 data races across 10M-cycle `SlabArena` stress, lossless backpressure drain, and Event Builder fault injection).
+- **Python (`pytest`):** **7/7 passing** (lifecycle/GIL release, FSM transitions, DQM histogram peak, 500x rapid menu swap stress, raw & ZS `.daq` integrity, layout offset validation, and I/O error surfacing).
