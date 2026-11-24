@@ -11,7 +11,10 @@ static void run_bench(const std::string& label,
                       EmulatorMode mode,
                       double target_rate_khz,
                       uint32_t hlt_workers,
-                      double duration_sec) {
+                      double duration_sec,
+                      bool enable_zs = false,
+                      bool enable_eb = false,
+                      double eb_drop_rate = 0.0) {
     EngineConfig cfg{};
     cfg.arena_slots = 65536;
     cfg.l1_queue_capacity = 16384;
@@ -23,15 +26,24 @@ static void run_bench(const std::string& label,
     cfg.mode = mode;
     cfg.pin_threads = false;
     cfg.seed = 2026;
+    cfg.lumi_block_interval_s = 1.0;
+    cfg.enable_zero_suppression = enable_zs;
+    cfg.zs_pedestal_threshold = 20;
+    cfg.enable_event_builder = enable_eb;
+    cfg.eb_timeout_us = 500;
+    cfg.eb_muon_drop_rate = eb_drop_rate;
     cfg.output_path = ""; // Null sink with full CRC32C framing
 
     TriggerMenu menu = TriggerMenu::default_nominal_menu();
     TriggerEngine engine;
-    engine.initialize(cfg, menu);
+    engine.configure(cfg, menu);
     engine.run_for_seconds(duration_sec);
 
     const TelemetrySnapshot s = engine.snapshot();
-    std::cout << "=== " << label << " (" << duration_sec << "s, W=" << hlt_workers << ") ===\n";
+    const auto lbs = engine.lumi_blocks();
+    std::cout << "=== " << label << " (" << duration_sec << "s, W=" << hlt_workers
+              << ", ZS=" << (enable_zs ? "ON" : "OFF")
+              << ", EB=" << (enable_eb ? "ON" : "OFF") << ") ===\n";
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "  Generated:      " << s.events_generated
               << " (" << (s.input_rate_hz / 1e3) << " kHz)\n";
@@ -53,18 +65,30 @@ static void run_bench(const std::string& label,
               << "  max=" << s.hlt_latency_us.max << "\n";
     std::cout << "  Signal Purity:  " << (s.signal_purity * 100.0)
               << "%  |  Efficiency: " << (s.signal_efficiency * 100.0) << "%\n";
-    std::cout << "  Arena Peak:     " << s.arena_peak << " / " << s.arena_capacity
+    std::cout << "  LumiBlocks:     " << lbs.size()
+              << "  |  Arena Peak: " << s.arena_peak << " / " << s.arena_capacity
               << "  |  Leaked: " << s.arena_allocated << "\n";
     std::cout << "  Storage CRC32C: " << (static_cast<double>(s.bytes_written) / (1024.0 * 1024.0))
-              << " MiB (" << s.events_written << " events)\n\n";
+              << " MiB (" << s.events_written << " events, compression=" << s.compression_ratio << "x)\n";
+    if (enable_eb) {
+        const double timeout_pct = s.eb_events_assembled > 0
+                                       ? (static_cast<double>(s.eb_timeout_events) * 100.0 /
+                                          static_cast<double>(s.eb_events_assembled))
+                                       : 0.0;
+        std::cout << "  Event Builder:  assembled=" << s.eb_events_assembled
+                  << "  partial=" << s.eb_partial_events
+                  << "  timeout_rate=" << timeout_pct << "%\n";
+    }
+    std::cout << "\n";
 }
 
 int main() {
     std::cout << "TriggerDAQ C++20 Pipeline Benchmark (AVX2="
               << (has_avx2_kernel() ? "ON" : "OFF") << ")\n\n";
 
-    run_bench("Sustained 200 kHz", EmulatorMode::Sustained, 200.0, 4, 2.0);
-    run_bench("PoissonBurst 250 kHz", EmulatorMode::PoissonBurst, 250.0, 4, 2.0);
-    run_bench("MaxThroughputStress", EmulatorMode::MaxThroughputStress, 0.0, 4, 3.0);
+    run_bench("Sustained 200 kHz", EmulatorMode::Sustained, 200.0, 4, 2.0, false, false);
+    run_bench("PoissonBurst 250 kHz", EmulatorMode::PoissonBurst, 250.0, 4, 2.0, true, false);
+    run_bench("MaxThroughputStress (ZS)", EmulatorMode::MaxThroughputStress, 0.0, 4, 3.0, true, false);
+    run_bench("EventBuilder (200 kHz, 1% Muon Drop)", EmulatorMode::Sustained, 200.0, 4, 2.0, true, true, 0.01);
     return 0;
 }
