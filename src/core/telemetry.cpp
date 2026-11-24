@@ -173,7 +173,6 @@ void AtomicLatencyHistogram::copy_to(LatencyHistogram& out) const noexcept {
         const uint64_t mn = min_value_.load(std::memory_order_relaxed);
         const uint64_t mx = max_value_.load(std::memory_order_relaxed);
 
-        std::atomic_thread_fence(std::memory_order_acquire);
         const uint64_t s2 = seq_.load(std::memory_order_acquire);
         if (s1 == s2) {
             out.total_count_ = sum;
