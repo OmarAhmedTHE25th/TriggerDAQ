@@ -10,12 +10,13 @@ from typing import Dict
 
 import numpy as np
 
-from ._triggerdaq_ext import verify_and_map_daq
+from ._triggerdaq_ext import get_record_layout, verify_and_map_daq
 
 # Exact packed binary layout matching [RawEventFrame(256B)][HltDecisionMetadata(32B)] = 288B
+# Validated directly against C++ sizeof / offsetof at module import time.
 RECORD_DTYPE = np.dtype(
     [
-        # RawEventFrame (256 bytes, alignas(64) -> 20 bytes tail padding after reserved[45])
+        # RawEventFrame (256 bytes, explicit_pad eliminates implicit compiler tail padding)
         ("event_id", "<u8"),
         ("bunch_crossing_id", "<u8"),
         ("ingest_timestamp_ns", "<u8"),
@@ -25,7 +26,7 @@ RECORD_DTYPE = np.dtype(
         ("hlt_score", "<u2"),
         ("topology_tag", "u1"),
         ("reserved", "u1", (45,)),
-        ("_frame_pad", "u1", (20,)),
+        ("explicit_pad", "u1", (20,)),
         # HltDecisionMetadata (32 bytes)
         ("hlt_timestamp_ns", "<u8"),
         ("cluster_centroid", "<f4"),
@@ -39,7 +40,26 @@ RECORD_DTYPE = np.dtype(
     ]
 )
 
-assert RECORD_DTYPE.itemsize == 288, f"Expected 288B record dtype, got {RECORD_DTYPE.itemsize}"
+
+def _validate_record_dtype() -> None:
+    layout = get_record_layout()
+    expected_size = int(layout["record_payload_size"])
+    if RECORD_DTYPE.itemsize != expected_size:
+        raise RuntimeError(
+            f"RECORD_DTYPE itemsize ({RECORD_DTYPE.itemsize}) != C++ record_payload_size ({expected_size})"
+        )
+    cpp_offsets: Dict[str, int] = layout["offsets"]
+    for field_name, expected_offset in cpp_offsets.items():
+        if field_name not in RECORD_DTYPE.fields:
+            raise RuntimeError(f"Missing field '{field_name}' in RECORD_DTYPE")
+        actual_offset = RECORD_DTYPE.fields[field_name][1]
+        if actual_offset != expected_offset:
+            raise RuntimeError(
+                f"Field '{field_name}' offset mismatch: Python={actual_offset} vs C++={expected_offset}"
+            )
+
+
+_validate_record_dtype()
 
 TOPOLOGY_NAMES = {
     0: "Background",

@@ -11,6 +11,7 @@ from ._triggerdaq_ext import (
     TriggerEngine,
     TriggerMenu,
     TriggerRule,
+    get_record_layout,
     has_avx2_kernel,
     verify_and_map_daq,
 )
@@ -36,6 +37,7 @@ __all__ = [
     "TriggerEngine",
     "TriggerMenu",
     "TriggerRule",
+    "get_record_layout",
     "has_avx2_kernel",
     "verify_and_map_daq",
     "TriggerRuleSpec",

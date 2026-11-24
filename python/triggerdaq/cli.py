@@ -71,7 +71,7 @@ def _build_rich_dashboard(snap: TelemetrySnapshot, menu_spec: TriggerMenuSpec, m
         "Arena Peak / Cap",
         f"{snap.arena_peak:,} / {snap.arena_capacity:,} (live {snap.arena_allocated:,})",
         "Written (CRC32C)",
-        f"{snap.bytes_written / (1024*1024):.2f} MiB ({snap.events_written:,} ev)",
+        f"{snap.bytes_written / (1024*1024):.2f} MiB ({snap.events_written:,} ev, err={snap.storage_write_errors})",
     )
 
     prescales: List[str] = []
@@ -200,7 +200,15 @@ def main(argv: list[str] | None = None) -> int:
         f"(leaked: {final_snap.arena_allocated})"
     )
     if args.output:
-        print(f"  DAQ Output:     {args.output} ({final_snap.events_written:,} events, {final_snap.bytes_written:,} bytes)")
+        print(
+            f"  DAQ Output:     {args.output} ({final_snap.events_written:,} events, "
+            f"{final_snap.bytes_written:,} bytes, errors={final_snap.storage_write_errors})"
+        )
+    if final_snap.storage_write_errors > 0:
+        print(
+            f"  [ERROR] Storage I/O encountered {final_snap.storage_write_errors} write error(s)!",
+            file=sys.stderr,
+        )
 
     if args.report_json:
         report = final_snap.to_dict()

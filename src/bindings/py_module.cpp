@@ -4,6 +4,7 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/string_view.h>
 
+#include <cstddef>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -19,6 +20,39 @@ NB_MODULE(_triggerdaq_ext, m) {
     m.doc() = "TriggerDAQ C++20 high-throughput two-stage detector trigger & DAQ extension";
 
     m.def("has_avx2_kernel", &has_avx2_kernel, "Returns True if compiled with AVX2 SIMD L1 kernels");
+
+    m.def("get_record_layout", []() {
+        nb::dict layout;
+        layout["frame_size"] = sizeof(RawEventFrame);
+        layout["meta_size"] = sizeof(HltDecisionMetadata);
+        layout["record_payload_size"] = static_cast<size_t>(DAQ_RECORD_PAYLOAD_SIZE);
+
+        nb::dict offsets;
+        offsets["event_id"] = offsetof(RawEventFrame, event_id);
+        offsets["bunch_crossing_id"] = offsetof(RawEventFrame, bunch_crossing_id);
+        offsets["ingest_timestamp_ns"] = offsetof(RawEventFrame, ingest_timestamp_ns);
+        offsets["calorimeter_cells"] = offsetof(RawEventFrame, calorimeter_cells);
+        offsets["muon_hits"] = offsetof(RawEventFrame, muon_hits);
+        offsets["l1_trigger_bits"] = offsetof(RawEventFrame, l1_trigger_bits);
+        offsets["hlt_score"] = offsetof(RawEventFrame, hlt_score);
+        offsets["topology_tag"] = offsetof(RawEventFrame, topology_tag);
+        offsets["reserved"] = offsetof(RawEventFrame, reserved);
+        offsets["explicit_pad"] = offsetof(RawEventFrame, explicit_pad);
+
+        constexpr size_t M = sizeof(RawEventFrame);
+        offsets["hlt_timestamp_ns"] = M + offsetof(HltDecisionMetadata, hlt_timestamp_ns);
+        offsets["cluster_centroid"] = M + offsetof(HltDecisionMetadata, cluster_centroid);
+        offsets["cluster_width"] = M + offsetof(HltDecisionMetadata, cluster_width);
+        offsets["isolation_ratio"] = M + offsetof(HltDecisionMetadata, isolation_ratio);
+        offsets["dimuon_inv_mass"] = M + offsetof(HltDecisionMetadata, dimuon_inv_mass);
+        offsets["meta_hlt_score"] = M + offsetof(HltDecisionMetadata, hlt_score);
+        offsets["predicted_class"] = M + offsetof(HltDecisionMetadata, predicted_class);
+        offsets["accepted"] = M + offsetof(HltDecisionMetadata, accepted);
+        offsets["worker_id"] = M + offsetof(HltDecisionMetadata, worker_id);
+
+        layout["offsets"] = offsets;
+        return layout;
+    }, "Return exact C++ sizeof/offsetof binary layout for RawEventFrame + HltDecisionMetadata");
 
     nb::enum_<EmulatorMode>(m, "EmulatorMode")
         .value("Sustained", EmulatorMode::Sustained)
@@ -88,6 +122,7 @@ NB_MODULE(_triggerdaq_ext, m) {
 
     nb::class_<LatencyStats>(m, "LatencyStats")
         .def(nb::init<>())
+        .def_ro("min", &LatencyStats::min)
         .def_ro("p50", &LatencyStats::p50)
         .def_ro("p95", &LatencyStats::p95)
         .def_ro("p99", &LatencyStats::p99)
@@ -95,6 +130,7 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_ro("max", &LatencyStats::max)
         .def("to_dict", [](const LatencyStats& s) {
             nb::dict d;
+            d["min"] = s.min;
             d["p50"] = s.p50;
             d["p95"] = s.p95;
             d["p99"] = s.p99;
@@ -115,6 +151,7 @@ NB_MODULE(_triggerdaq_ext, m) {
         .def_ro("l1_budget_violations", &TelemetrySnapshot::l1_budget_violations)
         .def_ro("bytes_written", &TelemetrySnapshot::bytes_written)
         .def_ro("events_written", &TelemetrySnapshot::events_written)
+        .def_ro("storage_write_errors", &TelemetrySnapshot::storage_write_errors)
         .def_ro("arena_allocated", &TelemetrySnapshot::arena_allocated)
         .def_ro("arena_peak", &TelemetrySnapshot::arena_peak)
         .def_ro("arena_capacity", &TelemetrySnapshot::arena_capacity)
@@ -148,6 +185,7 @@ NB_MODULE(_triggerdaq_ext, m) {
             d["l1_budget_violations"] = s.l1_budget_violations;
             d["bytes_written"] = s.bytes_written;
             d["events_written"] = s.events_written;
+            d["storage_write_errors"] = s.storage_write_errors;
             d["arena_allocated"] = s.arena_allocated;
             d["arena_peak"] = s.arena_peak;
             d["arena_capacity"] = s.arena_capacity;
@@ -155,6 +193,7 @@ NB_MODULE(_triggerdaq_ext, m) {
             d["hlt_queue_fill"] = s.hlt_queue_fill;
             d["storage_queue_fill"] = s.storage_queue_fill;
             nb::dict l1l;
+            l1l["min"] = s.l1_latency_ns.min;
             l1l["p50"] = s.l1_latency_ns.p50;
             l1l["p95"] = s.l1_latency_ns.p95;
             l1l["p99"] = s.l1_latency_ns.p99;
@@ -162,6 +201,7 @@ NB_MODULE(_triggerdaq_ext, m) {
             l1l["max"] = s.l1_latency_ns.max;
             d["l1_latency_ns"] = l1l;
             nb::dict hltl;
+            hltl["min"] = s.hlt_latency_us.min;
             hltl["p50"] = s.hlt_latency_us.p50;
             hltl["p95"] = s.hlt_latency_us.p95;
             hltl["p99"] = s.hlt_latency_us.p99;
