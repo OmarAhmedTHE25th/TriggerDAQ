@@ -8,9 +8,8 @@ namespace triggerdaq {
 
 namespace {
 
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
 inline unsigned __int128 atomic_load_128(volatile unsigned __int128* ptr) noexcept {
-    // Atomic 128-bit read via inline lock cmpxchg16b (zero libatomic dependency)
     return __sync_val_compare_and_swap(ptr, static_cast<unsigned __int128>(0),
                                        static_cast<unsigned __int128>(0));
 }
@@ -80,10 +79,10 @@ void SlabArena::initialize(uint32_t capacity) {
     next_indices_[capacity_ - 1].store(INVALID_SLOT, std::memory_order_relaxed);
 
     const HeadWord initial = pack_head(0, 0);
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
     atomic_store_128(&free_head_, initial);
 #else
-    __atomic_store_n(&free_head_, initial, __ATOMIC_RELEASE);
+    free_head_.store(initial, std::memory_order_release);
 #endif
     allocated_count_.store(0, std::memory_order_release);
     peak_occupancy_.store(0, std::memory_order_relaxed);
@@ -91,10 +90,10 @@ void SlabArena::initialize(uint32_t capacity) {
 }
 
 SlotHandle SlabArena::acquire() noexcept {
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
     HeadWord head = atomic_load_128(&free_head_);
 #else
-    HeadWord head = __atomic_load_n(&free_head_, __ATOMIC_ACQUIRE);
+    uint64_t head = free_head_.load(std::memory_order_acquire);
 #endif
     for (;;) {
         const uint32_t idx = unpack_index(head);
@@ -105,11 +104,11 @@ SlotHandle SlabArena::acquire() noexcept {
         const uint32_t next = next_indices_[idx].load(std::memory_order_relaxed);
         const uint64_t next_tag = unpack_tag(head) + 1ULL;
         const HeadWord new_head = pack_head(next_tag, next);
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
         const bool ok = atomic_cas_128(&free_head_, head, new_head);
 #else
-        const bool ok = __atomic_compare_exchange_n(
-            &free_head_, &head, new_head, true, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+        const bool ok = free_head_.compare_exchange_weak(
+            head, new_head, std::memory_order_acq_rel, std::memory_order_acquire);
 #endif
         if (ok) {
             const uint64_t cur = allocated_count_.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -127,25 +126,22 @@ void SlabArena::release(SlotHandle handle) noexcept {
     if (handle >= capacity_) {
         return;
     }
-    // Release fence ensures all reads/copies/checksums of the slot's frame & metadata complete
-    // before the handle is made visible to a future acquirer.
-    std::atomic_thread_fence(std::memory_order_release);
 
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
     HeadWord head = atomic_load_128(&free_head_);
 #else
-    HeadWord head = __atomic_load_n(&free_head_, __ATOMIC_ACQUIRE);
+    uint64_t head = free_head_.load(std::memory_order_acquire);
 #endif
     for (;;) {
         const uint32_t old_idx = unpack_index(head);
         next_indices_[handle].store(old_idx, std::memory_order_relaxed);
         const uint64_t next_tag = unpack_tag(head) + 1ULL;
         const HeadWord new_head = pack_head(next_tag, handle);
-#if defined(__SIZEOF_INT128__) && defined(__GCC_HAVE_SYNC_COMPARE_AND_SWAP_16)
+#if TRIGGERDAQ_USE_CAS128
         const bool ok = atomic_cas_128(&free_head_, head, new_head);
 #else
-        const bool ok = __atomic_compare_exchange_n(
-            &free_head_, &head, new_head, true, __ATOMIC_RELEASE, __ATOMIC_ACQUIRE);
+        const bool ok = free_head_.compare_exchange_weak(
+            head, new_head, std::memory_order_release, std::memory_order_acquire);
 #endif
         if (ok) {
             allocated_count_.fetch_sub(1, std::memory_order_release);
