@@ -65,14 +65,20 @@ struct TriggerMenu {
     static TriggerMenu default_nominal_menu() noexcept;
 };
 
-// Deterministic fractional phase-accumulator prescaler driven by a closed-loop PI controller.
+// Deterministic fractional phase-accumulator prescaler driven by a closed-loop PI controller
+// with EMA input smoothing, anti-windup clamping, and symmetric leaky-integrator recovery.
 class Prescaler {
 public:
-    Prescaler(float target_fill = 0.75f, float kp = 25.0f, float ki = 12.0f) noexcept;
+    Prescaler(float target_fill = 0.75f,
+              float kp = 25.0f,
+              float ki = 12.0f,
+              float ema_alpha = 0.25f,
+              float max_integral = 4.0f,
+              float leak_rate = 0.5f) noexcept;
 
     void reset(const TriggerMenu& menu) noexcept;
 
-    // Updates prescale factors based on HLT queue occupancy [0.0, 1.0].
+    // Updates prescale factors based on EMA-smoothed HLT queue occupancy [0.0, 1.0].
     // Rules with priority == Critical remain locked at 1.0x.
     void update_control(float queue_fill_ratio, float dt_sec, const TriggerMenu& menu) noexcept;
 
@@ -83,6 +89,9 @@ public:
         return rule_idx < TriggerMenu::MAX_RULES ? factors_[rule_idx] : 1.0f;
     }
 
+    [[nodiscard]] float smoothed_fill() const noexcept { return smoothed_fill_; }
+    [[nodiscard]] float integral_error() const noexcept { return integral_error_; }
+
     [[nodiscard]] const std::array<float, TriggerMenu::MAX_RULES>& factors() const noexcept {
         return factors_;
     }
@@ -91,6 +100,12 @@ private:
     float target_fill_{0.75f};
     float kp_{25.0f};
     float ki_{12.0f};
+    float ema_alpha_{0.25f};
+    float max_integral_{4.0f};
+    float leak_rate_{0.5f};
+
+    float smoothed_fill_{0.0f};
+    bool ema_initialized_{false};
     float integral_error_{0.0f};
     std::array<float, TriggerMenu::MAX_RULES> factors_{};
     std::array<float, TriggerMenu::MAX_RULES> accumulators_{};

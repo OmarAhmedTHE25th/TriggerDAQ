@@ -1,6 +1,7 @@
 #include "triggerdaq/l1/prescaler.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 namespace triggerdaq {
 
@@ -54,13 +55,25 @@ TriggerMenu TriggerMenu::default_nominal_menu() noexcept {
     return menu;
 }
 
-Prescaler::Prescaler(float target_fill, float kp, float ki) noexcept
-    : target_fill_(target_fill), kp_(kp), ki_(ki) {
+Prescaler::Prescaler(float target_fill,
+                     float kp,
+                     float ki,
+                     float ema_alpha,
+                     float max_integral,
+                     float leak_rate) noexcept
+    : target_fill_(target_fill),
+      kp_(kp),
+      ki_(ki),
+      ema_alpha_(std::clamp(ema_alpha, 0.01f, 1.0f)),
+      max_integral_(std::max(0.1f, max_integral)),
+      leak_rate_(std::max(0.0f, leak_rate)) {
     factors_.fill(1.0f);
     accumulators_.fill(0.0f);
 }
 
 void Prescaler::reset(const TriggerMenu& menu) noexcept {
+    smoothed_fill_ = 0.0f;
+    ema_initialized_ = false;
     integral_error_ = 0.0f;
     for (size_t i = 0; i < TriggerMenu::MAX_RULES; ++i) {
         if (i < menu.num_rules) {
@@ -78,13 +91,21 @@ void Prescaler::reset(const TriggerMenu& menu) noexcept {
 void Prescaler::update_control(float queue_fill_ratio,
                                float dt_sec,
                                const TriggerMenu& menu) noexcept {
-    const float error = queue_fill_ratio - target_fill_;
-    if (error > 0.0f) {
-        integral_error_ = std::min(integral_error_ + error * dt_sec, 10.0f);
+    const float clamped_fill = std::clamp(queue_fill_ratio, 0.0f, 1.0f);
+    const float safe_dt = std::clamp(dt_sec, 0.0f, 1.0f);
+
+    // EMA smoothing suppresses transient single-tick queue fill spikes
+    if (!ema_initialized_) {
+        smoothed_fill_ = clamped_fill;
+        ema_initialized_ = true;
     } else {
-        // Decay smoothly when below target watermark
-        integral_error_ = std::max(0.0f, integral_error_ + error * dt_sec * 1.5f);
+        smoothed_fill_ = ema_alpha_ * clamped_fill + (1.0f - ema_alpha_) * smoothed_fill_;
     }
+
+    // Symmetric leaky-integrator with anti-windup clamp [0.0, max_integral_]
+    const float error = smoothed_fill_ - target_fill_;
+    const float decayed = integral_error_ * std::exp(-leak_rate_ * safe_dt);
+    integral_error_ = std::clamp(decayed + error * safe_dt, 0.0f, max_integral_);
 
     const float control = std::max(0.0f, kp_ * error + ki_ * integral_error_);
 
