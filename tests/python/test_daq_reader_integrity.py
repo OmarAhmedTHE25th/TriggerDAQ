@@ -59,3 +59,29 @@ def test_daq_write_read_and_corruption_detection(tmp_path: Path):
     assert corrupt_report.valid_records == snap.events_written - 1
     assert corrupt_report.corrupt_records == 1
     assert len(corrupt_report.records) == snap.events_written - 1
+
+
+def test_record_layout_validation_and_io_error_surfacing():
+    layout = td.get_record_layout()
+    assert layout["frame_size"] == 256
+    assert layout["meta_size"] == 32
+    assert layout["record_payload_size"] == td.RECORD_DTYPE.itemsize == 288
+    assert layout["offsets"]["explicit_pad"] == 236
+
+    cfg = td.EngineConfig()
+    cfg.arena_slots = 4096
+    cfg.hlt_workers = 2
+    cfg.target_rate_khz = 100.0
+    cfg.mode = td.EmulatorMode.Sustained
+    cfg.output_path = "/nonexistent_triggerdaq_dir/cannot_write.daq"
+
+    engine = td.TriggerEngine()
+    engine.initialize(cfg, td.physics_nominal().compile())
+    engine.run_for_seconds(0.2)
+
+    snap = engine.snapshot()
+    assert snap.arena_allocated == 0
+    assert snap.storage_write_errors > 0
+    assert snap.bytes_written == 0
+    assert snap.to_dict()["storage_write_errors"] == snap.storage_write_errors
+

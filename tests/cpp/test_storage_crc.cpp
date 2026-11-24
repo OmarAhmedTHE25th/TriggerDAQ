@@ -70,10 +70,11 @@ int main() {
             CHECK(q.try_push(s));
         }
 
-        std::atomic<bool> stop_flag{true}; // Drain all queued events and exit
-        writer.run(stop_flag, arena, q, tel);
+        q.close(); // Ordered EOS signal: drain all queued events and exit
+        writer.run(arena, q, tel);
 
         CHECK(arena.allocated_count() == 0);
+        CHECK(tel.storage_write_errors.load() == 0);
         CHECK(tel.events_written.load() == NUM_EVENTS);
         CHECK(tel.bytes_written.load() == sizeof(DaqFileHeader) + NUM_EVENTS * DAQ_SERIALIZED_RECORD_SIZE);
 
@@ -106,7 +107,30 @@ int main() {
         CHECK(corrupt_res.corrupt_records == 1);
     }
 
+    // 4. Simulated disk write error handling (unwritable directory path)
+    {
+        SlabArena arena;
+        arena.initialize(64);
+        BoundedChannel<SlotHandle> q(64);
+        StorageTelemetry tel{};
+        EventWriter writer;
+        writer.initialize("/nonexistent_dir_triggerdaq/out.daq");
+
+        for (int i = 0; i < 16; ++i) {
+            SlotHandle s = arena.acquire();
+            CHECK(s != INVALID_SLOT);
+            CHECK(q.try_push(s));
+        }
+        q.close();
+        writer.run(arena, q, tel);
+
+        CHECK(arena.allocated_count() == 0); // Slots still cleanly released!
+        CHECK(tel.storage_write_errors.load() > 0);
+        CHECK(tel.bytes_written.load() == 0); // No silent byte-counter inflation
+        CHECK(tel.events_written.load() == 0);
+    }
+
     std::remove(path.c_str());
-    std::cout << "[PASS] test_storage_crc (RFC3720, HW/SW CRC32C, .daq write/verify & bit-flip detection)\n";
+    std::cout << "[PASS] test_storage_crc (RFC3720, HW/SW CRC32C, .daq write/verify, bit-flip & I/O error detection)\n";
     return 0;
 }
