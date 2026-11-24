@@ -14,16 +14,18 @@
 namespace triggerdaq {
 
 inline constexpr char DAQ_MAGIC[8] = {'T', 'D', 'A', 'Q', '0', '0', '0', '1'};
-inline constexpr uint32_t DAQ_SCHEMA_VERSION = 1;
+inline constexpr uint32_t DAQ_SCHEMA_VERSION = 2;
 inline constexpr uint32_t DAQ_RECORD_PAYLOAD_SIZE =
     sizeof(RawEventFrame) + sizeof(HltDecisionMetadata); // 288 bytes
+
+inline constexpr uint64_t DAQ_FLAG_ZERO_SUPPRESSED = 1ULL << 0;
 
 struct DaqFileHeader {
     char magic[8];
     uint32_t schema_version;
     uint32_t record_payload_size;
     uint64_t run_start_timestamp_ns;
-    uint64_t reserved;
+    uint64_t flags; // Bitmask (bit 0 = DAQ_FLAG_ZERO_SUPPRESSED)
 };
 
 static_assert(sizeof(DaqFileHeader) == 32, "DaqFileHeader must be exactly 32 bytes");
@@ -39,6 +41,18 @@ static_assert(sizeof(DaqRecordHeader) == 8, "DaqRecordHeader must be exactly 8 b
 inline constexpr size_t DAQ_SERIALIZED_RECORD_SIZE =
     sizeof(DaqRecordHeader) + sizeof(RawEventFrame) + sizeof(HltDecisionMetadata); // 296 bytes
 
+// Zero-Suppressed (ZS) record layout:
+// [RawEventFrame prefix (24B)] [RawEventFrame suffix after calo_cells (104B)]
+// [HltDecisionMetadata (32B)] [uint16_t num_nonzero_cells] [num_nonzero_cells * (uint8_t idx, uint16_t energy)]
+inline constexpr size_t ZS_FRAME_PREFIX_SIZE = offsetof(RawEventFrame, calorimeter_cells); // 24B
+inline constexpr size_t ZS_FRAME_SUFFIX_OFFSET = offsetof(RawEventFrame, muon_hits);       // 152B
+inline constexpr size_t ZS_FRAME_SUFFIX_SIZE = sizeof(RawEventFrame) - ZS_FRAME_SUFFIX_OFFSET; // 104B
+inline constexpr size_t ZS_BASE_PAYLOAD_SIZE =
+    ZS_FRAME_PREFIX_SIZE + ZS_FRAME_SUFFIX_SIZE + sizeof(HltDecisionMetadata) + sizeof(uint16_t); // 162B
+inline constexpr size_t ZS_CELL_ENTRY_SIZE = 3; // 1B cell_idx + 2B energy
+inline constexpr size_t ZS_MAX_PAYLOAD_SIZE =
+    ZS_BASE_PAYLOAD_SIZE + CALORIMETER_CELLS * ZS_CELL_ENTRY_SIZE; // 354B worst-case
+
 // Software Castagnoli CRC32C (always available for verification & fallback)
 [[nodiscard]] uint32_t crc32c_software(const void* data, size_t len, uint32_t init = 0) noexcept;
 
@@ -47,12 +61,14 @@ inline constexpr size_t DAQ_SERIALIZED_RECORD_SIZE =
 
 struct alignas(64) StorageTelemetry {
     std::atomic<uint64_t> bytes_written{0};
+    std::atomic<uint64_t> raw_bytes_uncompressed{0};
     std::atomic<uint64_t> events_written{0};
     std::atomic<uint64_t> flush_count{0};
     std::atomic<uint64_t> storage_write_errors{0};
 
     void reset() noexcept {
         bytes_written.store(0, std::memory_order_relaxed);
+        raw_bytes_uncompressed.store(0, std::memory_order_relaxed);
         events_written.store(0, std::memory_order_relaxed);
         flush_count.store(0, std::memory_order_relaxed);
         storage_write_errors.store(0, std::memory_order_relaxed);
@@ -61,6 +77,7 @@ struct alignas(64) StorageTelemetry {
 
 struct DaqVerificationResult {
     bool header_valid{false};
+    bool zero_suppressed{false};
     uint32_t schema_version{0};
     uint64_t run_start_timestamp_ns{0};
     uint64_t total_records{0};
@@ -69,7 +86,7 @@ struct DaqVerificationResult {
     std::vector<uint8_t> packed_payloads; // contiguous valid [RawEventFrame(256) + HltDecisionMetadata(32)]
 };
 
-// Reads and CRC32C-verifies a .daq binary run file.
+// Reads, CRC32C-verifies, and transparently decompresses (if ZS) a .daq binary run file.
 [[nodiscard]] DaqVerificationResult verify_daq_file(const std::string& path);
 
 class EventWriter {
@@ -78,7 +95,9 @@ public:
 
     EventWriter() = default;
 
-    void initialize(const std::string& output_path);
+    void initialize(const std::string& output_path,
+                    bool zero_suppression = false,
+                    uint16_t zs_pedestal_threshold = 20);
 
     // Drains storage_queue until it is closed and empty, then flushes remaining buffers.
     void run(SlabArena& arena,
@@ -95,7 +114,13 @@ private:
                       bool& io_failed,
                       StorageTelemetry& telemetry) noexcept;
 
+    size_t encode_zs_payload(const RawEventFrame& frame,
+                             const HltDecisionMetadata& meta,
+                             uint8_t* dst) const noexcept;
+
     std::string output_path_;
+    bool zero_suppression_{false};
+    uint16_t zs_pedestal_threshold_{20};
     std::unique_ptr<uint8_t[]> buffers_[2];
 };
 
