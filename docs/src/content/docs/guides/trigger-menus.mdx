@@ -1,0 +1,75 @@
+---
+title: Trigger Menus & PI Prescaling
+description: Define declarative Python trigger menus, configure closed-loop PI prescaling, and hot-reload thresholds at runtime.
+---
+
+## Declarative Python Menus
+
+Trigger menus are authored in Python using `TriggerMenuSpec` and `TriggerRuleSpec` dataclasses and compiled down to trivially copyable C++ `TriggerMenu` structs (up to 8 rules):
+
+```python
+import triggerdaq as td
+
+custom_menu = td.TriggerMenuSpec(
+    name="custom_physics",
+    muon_pt_threshold=12,
+    hlt_score_threshold=550,
+    version=1,
+    rules=[
+        td.TriggerRuleSpec(
+            name="L1_DiMu12_Discovery",
+            condition=td.RuleCondition.DiMuon,
+            priority=td.RulePriority.Critical,  # Always locked at 1.0x
+            threshold=18,
+            secondary_threshold=2,
+            base_prescale=1.0,
+            max_prescale=1.0,
+        ),
+        td.TriggerRuleSpec(
+            name="L1_JetCluster500",
+            condition=td.RuleCondition.JetCluster,
+            priority=td.RulePriority.Normal,
+            threshold=500,
+            base_prescale=1.0,
+            max_prescale=25.0,
+        ),
+        td.TriggerRuleSpec(
+            name="L1_TotalET1200",
+            condition=td.RuleCondition.TotalET,
+            priority=td.RulePriority.Low,
+            threshold=1200,
+            base_prescale=1.0,
+            max_prescale=100.0,
+        ),
+    ],
+)
+```
+
+### Built-in Presets
+
+| Preset | Muon Threshold | HLT Score Cut | Purpose |
+| :--- | :---: | :---: | :--- |
+| `physics_nominal` | `12` | `500` | Balanced pp collisions protecting `L1_DiMu12` at `1.0×` |
+| `heavy_ion_high_pileup` | `15` | `650` | Elevated Total-ET threshold (`2800`) and tighter HLT cut |
+| `luminosity_stress` | `8` | `450` | Low thresholds to intentionally exercise PI backpressure |
+
+## Closed-Loop PI Prescaler
+
+The L1 trigger monitors `hlt_queue_.fill_ratio()` against a **75% backpressure watermark**:
+
+1. **EMA Smoothing:** Raw occupancy is smoothed (`ema_alpha = 0.25`) so transient single-tick bursts do not trigger prescale oscillation.
+2. **Symmetric Leaky Integrator + Anti-Windup:** Integral error is clamped to `[0.0, 4.0]` with exponential decay (`exp(-leak_rate * dt)`) so low-priority rules recover smoothly once bursts subside.
+3. **Priority-Weighted Scaling:**
+   - `Critical` → **permanently locked at `1.0×`**
+   - `High` (`0.4×` gain), `Normal` (`1.5×` gain), `Low` (`4.0×` gain)
+4. **Deterministic Fractional Accumulator:** Each rule evaluates `acc += 1.0f; if (acc >= factor) { acc -= factor; accept(); }` for exact fractional acceptance rates (e.g., `2.5×` accepts exactly `400 / 1000` events).
+
+## Zero-Downtime Runtime Hot-Reload
+
+Call `engine.update_menu(new_menu)` while the engine is running to swap thresholds and rules atomically via `AtomicMenuSlot` without pausing or dropping frames:
+
+```python
+engine.update_menu(td.heavy_ion_high_pileup(version=2).compile())
+```
+
+`L1Trigger` detects the new `version`, resets stale rule counters beyond `num_rules`, and publishes `active_menu_num_rules` atomically into `L1Telemetry`.

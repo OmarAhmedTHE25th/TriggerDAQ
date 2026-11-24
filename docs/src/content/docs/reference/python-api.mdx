@@ -1,0 +1,62 @@
+---
+title: Python API & CLI Flags
+description: Reference for the triggerdaq Python package, nanobind types, and command-line options.
+---
+
+## `TriggerEngine` Methods
+
+| Method | GIL Released | Description |
+| :--- | :---: | :--- |
+| `configure(config, menu)` | No | Pre-allocates `SlabArena`, channels, staging buffers, and transitions `Initial/Configured/Stopped → Configured` |
+| `start()` | Yes | Starts Storage, HLT, L1, Event Builder (optional), Frontend, and LumiBlock threads (`→ Running`) |
+| `pause()` | Yes | Pauses Frontend collision emission (`Running → Paused`) |
+| `resume()` | Yes | Resumes Frontend emission (`Paused → Running`) |
+| `stop()` | Yes | Executes 4-stage lossless EOS drain and joins all threads (`→ Stopped`) |
+| `reset()` | Yes | Stops if active, clears telemetry/ledger, and returns to `Initial` |
+| `run_for_seconds(sec)` | Yes | Convenience wrapper: `start()`, sleep `sec`, `stop()` |
+| `update_menu(menu)` | No | Lock-free atomic seqlock hot-reload of `TriggerMenu` |
+| `snapshot()` | No | Returns `TelemetrySnapshot` (`< 1 µs`, lock-free) |
+| `lumi_blocks()` | No | Returns `list[LumiBlockRecord]` recorded during the run |
+| `state()` | No | Returns current `RunState` enum value |
+
+## Key `EngineConfig` Fields
+
+| Field | Type | Default | Description |
+| :--- | :--- | :---: | :--- |
+| `arena_slots` | `int` | `65536` | Pre-allocated `SlabArena` capacity |
+| `hlt_workers` | `int` | `4` | Number of HLT `std::jthread` workers |
+| `target_rate_khz` | `float` | `100.0` | Target collision rate (ignored in `MaxThroughputStress`) |
+| `l1_budget_ns` | `int` | `10000` | L1 latency watchdog budget in nanoseconds |
+| `mode` | `EmulatorMode` | `Sustained` | `Sustained`, `PoissonBurst`, or `MaxThroughputStress` |
+| `pin_threads` | `bool` | `False` | Pin pipeline threads to distinct CPU cores when core count permits |
+| `lumi_block_interval_s` | `float` | `1.0` | Wall-clock interval per Luminosity Block |
+| `enable_zero_suppression` | `bool` | `False` | Enable Schema v2 Zero-Suppression codec |
+| `zs_pedestal_threshold` | `int` | `20` | Calorimeter pedestal cut in MeV for ZS |
+| `enable_event_builder` | `bool` | `False` | Enable split Calo/Muon ROB Event Builder stage |
+| `eb_timeout_us` | `int` | `500` | Event Builder fragment assembly timeout (µs) |
+| `eb_muon_drop_rate` | `float` | `0.0` | Muon ROB fragment drop probability `[0.0, 1.0]` for fault injection |
+| `output_path` | `str` | `""` | Output `.daq` file path (empty = null sink with full CRC32C) |
+
+## `triggerdaq` CLI Flags
+
+```text
+triggerdaq [OPTIONS]
+
+  --duration FLOAT          Run duration in seconds (default: 5.0)
+  --rate-khz FLOAT          Target input rate in kHz (default: 150.0)
+  --hlt-workers INT         Number of HLT C++ worker threads (default: 4)
+  --arena-slots INT         Pre-allocated SlabArena slots (default: 65536)
+  --l1-budget-us FLOAT      L1 latency budget in microseconds (default: 10.0)
+  --mode {sustained,burst,stress}
+  --menu {physics_nominal,heavy_ion_high_pileup,luminosity_stress}
+  --output PATH             Optional output .daq binary file path
+  --report-json PATH        Optional JSON telemetry + LumiBlock report path
+  --zero-suppression        Enable Zero-Suppression storage codec
+  --zs-threshold INT        ZS pedestal threshold in MeV (default: 20)
+  --enable-eb               Enable sub-detector Event Builder stage
+  --eb-drop-rate FLOAT      Muon ROB drop rate for fault injection (default: 0.0)
+  --lumi-interval FLOAT     LumiBlock duration in seconds (default: 1.0)
+  --pin-threads             Pin pipeline threads to distinct CPU cores
+  --seed INT                Deterministic PRNG seed (default: 42)
+  --no-rich                 Force plain ANSI output
+```

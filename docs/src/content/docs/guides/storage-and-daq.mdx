@@ -1,0 +1,53 @@
+---
+title: Binary .daq Storage & Zero-Suppression
+description: Schema v2 binary format, hardware SSE4.2 CRC32C, Zero-Suppression codec, I/O error handling, and zero-copy NumPy inspection.
+---
+
+## Binary `.daq` File Format (Schema v2)
+
+`EventWriter` uses double-buffered **256 KB** staging buffers on a dedicated writer thread and frames every accepted event with hardware-accelerated **SSE4.2 CRC32C** (`_mm_crc32_u64` / `_mm_crc32_u8`, with a bit-identical Castagnoli `0x82F63B78` table fallback):
+
+### 32-Byte File Header (`DaqFileHeader`)
+
+| Offset | Size | Field | Value |
+| ---: | ---: | :--- | :--- |
+| `0` | 8 B | `magic` | `"TDAQ0001"` |
+| `8` | 4 B | `schema_version` | `2` (reads v1 & v2) |
+| `12` | 4 B | `record_payload_size` | `288` (`256B RawEventFrame + 32B HltDecisionMetadata`) |
+| `16` | 8 B | `run_start_timestamp_ns` | Wall-clock run start epoch (ns) |
+| `24` | 8 B | `flags` | Bit 0 = `DAQ_FLAG_ZERO_SUPPRESSED` |
+
+### Framed Event Records
+
+Each record on disk is prefixed by an 8-byte `DaqRecordHeader`:
+
+```text
+[ uint32_t length ][ uint32_t crc32c ][ payload (length bytes) ]
+```
+
+- **Raw Mode (`flags == 0`):** `length == 288` bytes (`[256B RawEventFrame][32B HltDecisionMetadata]`).
+- **Zero-Suppressed Mode (`DAQ_FLAG_ZERO_SUPPRESSED`):** Replaces the 128-byte `calorimeter_cells[64]` array with `uint16_t num_nonzero_cells` followed by packed 3-byte `(uint8_t cell_idx, uint16_t energy)` pairs for cells strictly above `zs_pedestal_threshold` (default `20 MeV`).
+  - Typical Di-Muon / Jet runs achieve **1.66× compression** with zero loss of above-pedestal calorimeter information.
+
+## Slot Safety & POSIX I/O Hardening
+
+- **Post-CRC32C Slot Release:** `EventWriter` copies `RawEventFrame` + `HltDecisionMetadata` into the staging buffer, computes and writes the `DaqRecordHeader` + CRC32C checksum, and **only then** calls `arena.release(slot)`.
+- **Full-Write Loop & Error Reporting:** `::write()` retries on `EINTR` and partial writes. Hard errors (`ENOSPC`, `EIO`, `EBADF`, or failed `::open()`) increment `TelemetrySnapshot::storage_write_errors`, halt further byte-counter increments, continue draining `SlabArena` slots to prevent deadlocks, and surface clearly in the CLI and Python API.
+
+## Zero-Copy NumPy `DaqReader`
+
+`verify_and_map_daq(path)` verifies every CRC32C checksum in C++ with the GIL released, transparently decompresses Zero-Suppressed payloads back into contiguous 288-byte records, and hands ownership of the C++ buffer to NumPy via an `nb::capsule` (**zero copy**).
+
+At Python module import time, `reader.py` validates every field offset and `RECORD_DTYPE.itemsize` against `get_record_layout()` exported from C++ `offsetof` / `sizeof`:
+
+```python
+import triggerdaq as td
+
+report = td.DaqReader.read("run_zs.daq")
+assert report.is_clean
+assert report.zero_suppressed
+
+frames = report.records  # Zero-copy NumPy structured array (288B stride)
+dimuons = frames[frames["topology_tag"] == 1]
+print(f"Di-Muons: {len(dimuons)}, mean M_inv: {dimuons['dimuon_inv_mass'].mean():.2f} GeV")
+```

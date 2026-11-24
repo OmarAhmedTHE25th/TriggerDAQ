@@ -1,0 +1,53 @@
+---
+title: Memory & Lock-Free Concurrency
+description: Exact binary layouts, 128-bit CAS SlabArena, wraparound-safe BoundedChannel, ARM64 seqlocks, and lossless shutdown.
+---
+
+import { Aside } from '@astrojs/starlight/components';
+
+Every data structure on the hot path is designed for **zero dynamic allocation**, **zero false sharing** (`alignas(64)`), and **strict C++20 memory-model soundness** across both x86-64 and ARM64.
+
+## `RawEventFrame` Exact 256-Byte Binary Layout
+
+All fields are naturally aligned with **zero implicit compiler padding**, enforced by compile-time `static_assert(offsetof(...))` checks in C++ and validated at module import time in Python (`_validate_record_dtype()`).
+
+| Offset | Size | Field | Description |
+| ---: | ---: | :--- | :--- |
+| `0` | 8 B | `event_id` | Monotonic 64-bit collision event identifier |
+| `8` | 8 B | `bunch_crossing_id` | Global LHC bunch crossing counter (`orbit_id * 3564 + bcid`) |
+| `16` | 8 B | `ingest_timestamp_ns` | Steady-clock ingestion timestamp (ns) |
+| `24` | 128 B | `calorimeter_cells[64]` | 64-channel calorimeter energy deposits in MeV (`uint16_t`) |
+| `152` | 32 B | `muon_hits[16]` | 16-chamber muon momentum proxies (`uint16_t`) |
+| `184` | 4 B | `l1_trigger_bits` | Bitmask of fired L1 trigger rules (up to 8 rules) |
+| `188` | 2 B | `hlt_score` | Quantized Int8 MLP signal confidence `[0, 1000]` |
+| `190` | 1 B | `topology_tag` | Ground-truth generator label (`0..3`) |
+| `191` | 1 B | `status_flags` | Bit 0: `FRAME_STATUS_PARTIAL_EB`, Bit 1: `FRAME_STATUS_ZERO_SUPPRESSED` |
+| `192` | 4 B | `orbit_id` | LHC orbit counter (increments on BCID 3564 wrap) |
+| `196` | 4 B | `lumi_block_id` | Active Luminosity Block (LumiSection) ID |
+| `200` | 2 B | `bcid` | LHC Bunch-Crossing ID in `[0, 3563]` |
+| `202` | 34 B | `reserved[34]` | Future physics header extension bytes |
+| `236` | 20 B | `explicit_pad[20]` | Explicit 64-byte alignment tail padding (`sizeof == 256`) |
+
+## Lock-Free Primitives
+
+### 1. `SlabArena` (128-Bit Double-Word CAS Freelist)
+- Pre-allocates contiguous 64-byte-aligned `RawEventFrame[N]` and `HltDecisionMetadata[N]` slabs.
+- On 64-bit x86 targets (`-mcx16`), `free_head_` packs a **64-bit monotonic tag + 32-bit slot index** into an `unsigned __int128` updated via inline `lock cmpxchg16b` (`__sync_val_compare_and_swap`), eliminating 32-bit ABA wraparound with zero `libatomic` dependency.
+- On non-128-bit targets and ThreadSanitizer builds, falls back cleanly to `std::atomic<uint64_t>` with explicit `acq_rel`/`release` ordering.
+
+### 2. `BoundedChannel<T>` (Vyukov MPMC Ring Buffer)
+- Computes unsigned sequence differences (`seq - pos` / `seq - (pos + 1)`) before casting to `std::make_signed_t<size_t>` to avoid signed overflow UB on wraparound.
+- Tracks occupancy via a dedicated cache-padded `std::atomic<size_t> size_` (`release`/`acquire`), preventing torn `enqueue_pos_`/`dequeue_pos_` reads in `fill_ratio()`.
+- Supports `close()`, `reopen()`, `is_closed()`, and `push_blocking()` for lossless ordered draining.
+
+### 3. ARM64-Safe Seqlocks (`AtomicMenuSlot` & `AtomicLatencyHistogram`)
+- `AtomicMenuSlot` stores `TriggerMenu` in `std::array<std::atomic<uint64_t>, N>` words protected by a sequence counter `seq_` and returns `TriggerMenu` **by value** so hot-path threads never hold dangling references across runtime menu swaps.
+- Both seqlocks place `std::atomic_thread_fence(std::memory_order_acquire)` immediately after the relaxed payload read loop and before re-reading `s2 = seq_.load(acquire)`, guaranteeing no weak-memory reordering on ARM64.
+
+<Aside type="note" title="4-Stage Lossless Ordered Shutdown">
+  `TriggerEngine::stop()` executes an ordered upstream-to-downstream EOS drain:
+  1. Stop `DetectorEmulator` and join.
+  2. Close ROB queues (if Event Builder active) or `l1_queue_`; L1 drains losslessly into HLT via `push_blocking()`, closes `hlt_queue_`, and joins.
+  3. HLT workers drain `hlt_queue_` until empty and closed, push losslessly into `storage_queue_`, and join; `storage_queue_` is closed.
+  4. `EventWriter` drains remaining slots, flushes double buffers to disk, and joins with **0 leaked slots** and **0 dropped post-L1 events**.
+</Aside>

@@ -1,0 +1,67 @@
+---
+title: Installation & Build
+description: Build TriggerDAQ as standalone C++20 binaries and as an editable Python package with nanobind.
+---
+
+import { Tabs, TabItem, Aside } from '@astrojs/starlight/components';
+
+TriggerDAQ builds cleanly on **Ubuntu Linux / WSL2** with `g++ 13+` or `clang++ 16+` using strict `-std=c++20 -O3 -Wall -Wextra -Werror` flags.
+
+## Prerequisites
+
+- **C++20 Compiler:** GCC 12+ or Clang 16+ (with `-mavx2`, `-msse4.2`, `-mcx16` auto-detected by CMake)
+- **Build Tools:** CMake ≥ 3.20 and Ninja
+- **Python:** Python 3.10+ (tested on 3.12) with `pip`, `numpy`, `nanobind`, `scikit-build-core`
+- **Optional UI / Dev:** `rich` (live terminal dashboard), `pytest` (Python test suite)
+
+## Build Workflows
+
+<Tabs>
+  <TabItem label="C++20 Core & CTest">
+    ```bash
+    git clone https://github.com/OmarAhmedTHE25th/TriggerDAQ.git
+    cd TriggerDAQ
+
+    cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+    cmake --build build -j
+    ctest --test-dir build --output-on-failure -V
+    ```
+  </TabItem>
+  <TabItem label="Python Control Plane">
+    ```bash
+    pip install -e .
+    pytest -v tests/python/
+    ```
+  </TabItem>
+  <TabItem label="Sanitizer CI Matrix">
+    ```bash
+    # AddressSanitizer + UndefinedBehaviorSanitizer
+    cmake -B build_asan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+    cmake --build build_asan -j
+    ctest --test-dir build_asan --output-on-failure
+
+    # ThreadSanitizer (disable high-entropy ASLR on Linux 6.6+)
+    cmake -B build_tsan -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+      -DCMAKE_CXX_FLAGS="-fsanitize=thread -fno-omit-frame-pointer" \
+      -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+    cmake --build build_tsan -j
+    setarch x86_64 -R ctest --test-dir build_tsan --output-on-failure
+    ```
+  </TabItem>
+</Tabs>
+
+<Aside type="tip">
+  CMake automatically probes `-mavx2`, `-msse4.2`, and `-mcx16` via `CheckCXXCompilerFlag`. On ARM64 or older x86 targets without AVX2/SSE4.2/CX16, TriggerDAQ seamlessly falls back to bit-identical scalar kernels, Castagnoli lookup-table CRC32C, and `std::atomic<uint64_t>` freelist atomics.
+</Aside>
+
+## Verify Installation
+
+Run the C++ throughput benchmark and verify both CLI entry points:
+
+```bash
+./build/bench_pipeline
+triggerdaq --help
+triggerdaq-inspect --help
+```

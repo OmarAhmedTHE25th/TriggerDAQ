@@ -20,6 +20,13 @@ __pycache__/
 *.daq
 *_report.json
 
+# Docs / Node
+docs/node_modules/
+docs/dist/
+docs/.astro/
+.vercel
+docs/.vercel
+
 # IDE / OS
 .vscode/
 .idea/

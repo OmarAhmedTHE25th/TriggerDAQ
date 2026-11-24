@@ -1,0 +1,84 @@
+---
+title: Quickstart & CLI
+description: Run live stress benchmarks, inspect binary .daq files, and steer TriggerEngine from Python.
+---
+
+## 1. Run the Live Telemetry CLI
+
+Start a 5-second max-throughput stress run with **Zero-Suppression** storage enabled and export a full JSON telemetry + LumiBlock report:
+
+```bash
+triggerdaq \
+  --mode stress \
+  --duration 5 \
+  --menu physics_nominal \
+  --hlt-workers 4 \
+  --zero-suppression \
+  --output run_zs.daq \
+  --report-json report.json
+```
+
+When attached to an interactive TTY with `rich` installed, `triggerdaq` renders a live 10 Hz dashboard including input/L1/HLT rates, `p50/p99/p99.9` latencies, queue watermarks, active prescales, LumiBlock ID, and a live 32-bin **DQM Di-Muon Invariant Mass** bar chart:
+
+```text
+DQM Di-Muon: 0 GeV |█           ▁▂▃▅▆▇██▇▇▆▅▄▃▂▁▁   | 160 GeV (peak bin=8,386)
+```
+
+## 2. Inspect & Verify a `.daq` Run File
+
+`triggerdaq-inspect` verifies every hardware CRC32C checksum, transparently decompresses Zero-Suppressed records, and prints physics purity, LumiBlock span, and BCID bounds:
+
+```bash
+triggerdaq-inspect run_zs.daq
+```
+
+```text
+TriggerDAQ Inspector: run_zs.daq
+  Header Valid:    True (schema v2, ZS=ON)
+  Total Records:   183687
+  Valid Records:   183687
+  Corrupt Records: 0
+  HLT Score:       mean=944.4, min=501, max=1000
+  LumiBlocks:      1..6  |  BCID range: 0..3443
+  Signal Purity:   100.00%
+  Topology Breakdown:
+    - Background    :        0 ( 0.00%)
+    - DiMuon        :    78677 (42.83%)
+    - LocalizedJet  :   105010 (57.17%)
+    - PileupNoise   :        0 ( 0.00%)
+```
+
+## 3. Control TriggerEngine from Python
+
+```python
+import time
+import triggerdaq as td
+
+cfg = td.EngineConfig()
+cfg.arena_slots = 65536
+cfg.hlt_workers = 4
+cfg.target_rate_khz = 200.0
+cfg.mode = td.EmulatorMode.Sustained
+cfg.enable_zero_suppression = True
+cfg.enable_event_builder = True
+cfg.eb_muon_drop_rate = 0.01  # 1% Muon ROB fault injection
+cfg.output_path = "run_eb.daq"
+
+engine = td.TriggerEngine()
+engine.configure(cfg, td.physics_nominal().compile())
+engine.start()
+
+time.sleep(1.0)
+# Atomic zero-downtime hot-reload of trigger thresholds
+engine.update_menu(td.heavy_ion_high_pileup(version=2).compile())
+time.sleep(1.0)
+
+engine.stop()
+snap = engine.snapshot()
+print(f"Rate: {snap.input_rate_hz/1e3:.1f} kHz | Purity: {snap.signal_purity*100:.2f}% | ZS: {snap.compression_ratio:.2f}x")
+print(f"LumiBlocks recorded: {len(engine.lumi_blocks())}")
+
+# Zero-copy NumPy structured array view over CRC32C-verified frames
+report = td.DaqReader.read("run_eb.daq")
+print(report.records["dimuon_inv_mass"].mean(), report.records["bcid"].max())
+```

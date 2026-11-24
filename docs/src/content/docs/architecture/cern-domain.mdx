@@ -1,0 +1,51 @@
+---
+title: CERN Domain Modeling
+description: LHC orbit/BCID bunch trains, Run Control FSM, Luminosity Blocks, live DQM histograms, and Event Builder ROB assembly.
+---
+
+TriggerDAQ incorporates production high-energy physics (HEP) DAQ concepts modeled on the LHC ATLAS and CMS experiments.
+
+## 1. LHC Orbit & Bunch-Crossing (BCID) Timing
+
+Real LHC proton beams are structured into **3,564 bunch slots per orbit** (`25 ns` spacing), arranged in filled bunch trains separated by inter-train gaps and a **120-bunch abort gap** (`BCID 3444..3563`) used for beam-dump kicker rise time.
+
+- `LhcFillingScheme` defines `bunches_per_orbit = 3564`, `abort_gap_start = 3444`, `train_length = 72`, and `train_gap = 8`.
+- `LhcOrbitClock::advance_to_next_filled()` skips empty gaps and the abort gap, wrapping `bcid` from `3563 → 0` while incrementing `orbit_id`.
+- Every `RawEventFrame` carries exact `(orbit_id, bcid, bunch_crossing_id)` metadata, verified to never emit collisions during abort-gap BCIDs.
+
+## 2. Run Control FSM & Luminosity Blocks
+
+`TriggerEngine` enforces an explicit, mutex-serialized (`fsm_mu_`) **Run Control Finite State Machine**:
+
+```text
+Initial ──configure()──▶ Configured ──start()──▶ Running ⇄ Paused
+   ▲                         │                      │         │
+   └────────reset()──────────┴───────stop()─────────┴─────────▼
+                                                           Stopped
+```
+
+- Invalid transitions (e.g., `start()` from `Initial`, `pause()` from `Stopped`, `configure()` while `Running`) throw `std::logic_error` (surfaced as `RuntimeError` in Python).
+- While running, a lightweight timer advances `lumi_block_id` every `lumi_block_interval_s` (default `1.0 s`) and appends a `LumiBlockRecord` (events generated, L1/HLT accepts, dead-time, live-time fraction, and active prescales) to the run ledger exported in `--report-json`.
+
+## 3. Live Data Quality Monitoring (DQM) Histograms
+
+Each HLT worker maintains lock-free atomic histograms updated on every accepted event and merged into `TelemetrySnapshot`:
+
+| Histogram | Bins | Range | Purpose |
+| :--- | :---: | :--- | :--- |
+| `dqm_dimuon_mass_hist` | 32 | `0–160 GeV` (`5 GeV/bin`) | Tracks Z-boson / high-mass di-muon resonance peak |
+| `dqm_jet_et_hist` | 16 | `0–1600 MeV` (`100 MeV/bin`) | Monitors isolated jet energy spectrum |
+| `dqm_calo_occupancy` | 64 | Cells `0–63` | Detects hot/dead calorimeter channels |
+
+## 4. Sub-Detector Event Builder (`EventBuilder`)
+
+When `enable_event_builder = true`, the Frontend splits each collision into two independent **Read-Out Buffer (ROB)** streams tagged with `(orbit_id, bcid, event_id)`:
+
+- `CaloRobFragment` → `calo_rob_queue_`
+- `MuonRobFragment` → `muon_rob_queue_` (supports configurable `eb_muon_drop_rate` for fault injection)
+
+`EventBuilder` matches fragments by `event_id` in a pre-allocated open-addressed assembly table (`16,384` entries, zero heap allocation):
+
+- **Complete assembly:** Both fragments arrive before `eb_timeout_us` → unified `RawEventFrame` pushed to L1.
+- **Timeout handling:** Missing partner fragment exceeds `eb_timeout_us` → emits partial frame flagged with `FRAME_STATUS_PARTIAL_EB` and records `event_id` in an O(1) `timed_out_ids_` cache.
+- **Late-fragment deduplication:** Delayed fragments arriving after timeout hit `timed_out_ids_`, increment `eb_late_fragments_dropped`, and are dropped immediately — preventing ghost duplicate events and guaranteeing **0 leaked `SlabArena` slots**.

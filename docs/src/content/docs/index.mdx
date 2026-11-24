@@ -1,0 +1,85 @@
+---
+title: TriggerDAQ
+description: Hybrid C++20 / Python Two-Stage Real-Time Detector Trigger & Data Acquisition Engine modeled on CERN ATLAS/CMS L1 + HLT.
+template: splash
+hero:
+  title: Real-Time Particle Trigger &amp; DAQ Engine
+  tagline: Hybrid C++20 zero-allocation hot path with a Python 3.12+ control, telemetry, and analysis plane — modeled on CERN ATLAS/CMS Level-1 and High-Level Trigger architecture.
+  image:
+    dark: ../../assets/logo-dark.svg
+    light: ../../assets/logo-light.svg
+    alt: TriggerDAQ Cylindrical Detector Cross-Section Emblem
+  actions:
+    - text: Get Started
+      link: /getting-started/installation/
+      icon: right-arrow
+      variant: primary
+    - text: Explore Architecture
+      link: /architecture/overview/
+      icon: open-book
+      variant: secondary
+    - text: View on GitHub
+      link: https://github.com/OmarAhmedTHE25th/TriggerDAQ
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+import PipelineDiagram from '../../components/PipelineDiagram.astro';
+
+<div class="tdaq-badge-row">
+  <span class="tdaq-badge"><span class="dot"></span>C++20 -O3 -Werror</span>
+  <span class="tdaq-badge"><span class="dot"></span>AVX2 + SSE4.2 + CX16</span>
+  <span class="tdaq-badge"><span class="dot"></span>ASan / UBSan 6/6</span>
+  <span class="tdaq-badge"><span class="dot"></span>ThreadSanitizer 6/6</span>
+  <span class="tdaq-badge"><span class="dot"></span>pytest 7/7</span>
+</div>
+
+<div class="tdaq-metrics">
+  <div class="tdaq-metric-card">
+    <div class="tdaq-metric-label">Peak Throughput</div>
+    <div class="tdaq-metric-value">1.21 MHz</div>
+    <div class="tdaq-metric-sub">0.00% dead-time (ZS ON)</div>
+  </div>
+  <div class="tdaq-metric-card">
+    <div class="tdaq-metric-label">L1 SIMD Latency</div>
+    <div class="tdaq-metric-value amber">277 ns</div>
+    <div class="tdaq-metric-sub">p99 = 696 ns • AVX2 exact</div>
+  </div>
+  <div class="tdaq-metric-card">
+    <div class="tdaq-metric-label">HLT Farm Latency</div>
+    <div class="tdaq-metric-value">0.94 µs</div>
+    <div class="tdaq-metric-sub">Int8 MLP • 100.0% purity</div>
+  </div>
+  <div class="tdaq-metric-card">
+    <div class="tdaq-metric-label">Zero-Suppression</div>
+    <div class="tdaq-metric-value amber">1.66×</div>
+    <div class="tdaq-metric-sub">Hardware SSE4.2 CRC32C</div>
+  </div>
+  <div class="tdaq-metric-card">
+    <div class="tdaq-metric-label">Memory Safety</div>
+    <div class="tdaq-metric-value">0 Leaks</div>
+    <div class="tdaq-metric-sub">128-bit CAS SlabArena</div>
+  </div>
+</div>
+
+## Dual-Plane Architecture
+
+<PipelineDiagram />
+
+## Core Capabilities
+
+<CardGrid stagger>
+  <Card title="Zero Hot-Path Allocations" icon="rocket">
+    After <code>configure()</code>, all Frontend → Event Builder → L1 → HLT → Storage threads pass 32-bit <code>SlotHandle</code> descriptors backed by a 64B-aligned <code>SlabArena</code> with 128-bit CAS.
+  </Card>
+  <Card title="Bit-Identical AVX2 L1 &amp; PI Prescaler" icon="setting">
+    Compile-time AVX2 calorimeter and muon reduction kernels verified bit-identical to C++20 scalar across 50k frames, paired with an EMA-smoothed closed-loop PI prescaler locking <code>Critical</code> discovery rules at <code>1.0×</code>.
+  </Card>
+  <Card title="CERN Domain Fidelity" icon="star">
+    3564-bunch LHC orbit/BCID filling scheme with abort-gap exclusion, validated Run Control FSM, per-second Luminosity Block ledgers, live DQM histograms, and sub-detector Event Builder fragment assembly.
+  </Card>
+  <Card title="GIL-Free nanobind &amp; Zero-Copy NumPy" icon="laptop">
+    Python drives declarative trigger menus, runtime seqlock hot-reloads, a live Rich/ANSI telemetry dashboard, and zero-copy CRC32C-verified <code>.daq</code> inspection with import-time C++ layout checks.
+  </Card>
+</CardGrid>

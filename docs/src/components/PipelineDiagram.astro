@@ -1,0 +1,120 @@
+---
+---
+<div class="tdaq-diagram-wrap">
+  <svg viewBox="0 0 920 390" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="TriggerDAQ Hybrid C++20 / Python Architecture">
+    <defs>
+      <linearGradient id="pyGrad" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0%" stop-color="#0e7490" stop-opacity="0.28" />
+        <stop offset="100%" stop-color="#0284c7" stop-opacity="0.18" />
+      </linearGradient>
+      <linearGradient id="cppGrad" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0%" stop-color="#0f172a" />
+        <stop offset="100%" stop-color="#0b1324" />
+      </linearGradient>
+      <marker id="arrowCyan" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 10 5 L 0 9 z" fill="#22d3ee" />
+      </marker>
+      <marker id="arrowAmber" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 1 L 10 5 L 0 9 z" fill="#fbbf24" />
+      </marker>
+    </defs>
+
+    <!-- Python Control & Telemetry Plane -->
+    <rect x="16" y="12" width="888" height="92" rx="12" fill="url(#pyGrad)" stroke="#22d3ee" stroke-opacity="0.5" stroke-width="1.5" />
+    <text x="32" y="34" fill="#67e8f9" font-family="Space Grotesk, sans-serif" font-size="12" font-weight="700" letter-spacing="1.2">PYTHON 3.12+ CONTROL, TELEMETRY &amp; ANALYSIS PLANE</text>
+
+    <rect x="34" y="46" width="248" height="44" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.45" />
+    <text x="158" y="65" text-anchor="middle" fill="#f8fafc" font-family="Inter, sans-serif" font-size="12" font-weight="600">Run Control FSM &amp; Trigger Menus</text>
+    <text x="158" y="81" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="10">configure / start / pause / update_menu()</text>
+
+    <rect x="336" y="46" width="248" height="44" rx="8" fill="#0f172a" stroke="#38bdf8" stroke-opacity="0.45" />
+    <text x="460" y="65" text-anchor="middle" fill="#f8fafc" font-family="Inter, sans-serif" font-size="12" font-weight="600">Live Rich/ANSI Dashboard + DQM</text>
+    <text x="460" y="81" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="10">snapshot() &lt; 1 us • LumiBlocks • M_inv</text>
+
+    <rect x="638" y="46" width="248" height="44" rx="8" fill="#0f172a" stroke="#fbbf24" stroke-opacity="0.5" />
+    <text x="762" y="65" text-anchor="middle" fill="#f8fafc" font-family="Inter, sans-serif" font-size="12" font-weight="600">DaqReader &amp; NumPy Inspector</text>
+    <text x="762" y="81" text-anchor="middle" fill="#fbbf24" font-family="JetBrains Mono, monospace" font-size="10">zero-copy RECORD_DTYPE • ZS decode</text>
+
+    <!-- nanobind Bridge Bar -->
+    <rect x="190" y="114" width="540" height="24" rx="12" fill="#082f49" stroke="#22d3ee" stroke-width="1" />
+    <text x="460" y="130" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono, monospace" font-size="10.5" font-weight="600">nanobind (_triggerdaq_ext) — GIL Released on Execution • Atomic Seqlock Reads</text>
+
+    <!-- Bridge Arrows -->
+    <line x1="158" y1="90" x2="158" y2="162" stroke="#22d3ee" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCyan)" />
+    <line x1="460" y1="162" x2="460" y2="94" stroke="#22d3ee" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowCyan)" />
+    <line x1="762" y1="252" x2="762" y2="94" stroke="#fbbf24" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#arrowAmber)" />
+
+    <!-- C++20 Zero-Allocation Core -->
+    <rect x="16" y="150" width="888" height="226" rx="12" fill="url(#cppGrad)" stroke="#334155" stroke-width="1.5" />
+    <text x="32" y="172" fill="#fbbf24" font-family="Space Grotesk, sans-serif" font-size="12" font-weight="700" letter-spacing="1.2">C++20 ZERO-ALLOCATION HOT-PATH DATA PLANE (AVX2 • SSE4.2 • 128-BIT CAS)</text>
+
+    <!-- Stage 1: Frontend -->
+    <rect x="34" y="188" width="156" height="74" rx="8" fill="#131c31" stroke="#22d3ee" stroke-width="1.4" />
+    <text x="112" y="209" text-anchor="middle" fill="#f8fafc" font-family="Inter, sans-serif" font-size="12" font-weight="700">Detector Emulator</text>
+    <text x="112" y="226" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="9.5">xoshiro256** + LHC</text>
+    <text x="112" y="240" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="9.5">3564 BCID / Abort Gap</text>
+    <text x="112" y="254" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono, monospace" font-size="9">Split Calo/Muon ROBs</text>
+
+    <!-- Stage 2: Event Builder -->
+    <rect x="212" y="188" width="144" height="74" rx="8" fill="#131c31" stroke="#38bdf8" stroke-width="1.2" stroke-dasharray="4 2" />
+    <text x="284" y="209" text-anchor="middle" fill="#f8fafc" font-family="Inter, sans-serif" font-size="12" font-weight="700">Event Builder</text>
+    <text x="284" y="226" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="9.5">Match by event_id</text>
+    <text x="284" y="240" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="9.5">Timeout -&gt; PARTIAL</text>
+    <text x="284" y="254" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono, monospace" font-size="9">Late-frag dedup O(1)</text>
+
+    <!-- Stage 3: L1 SIMD Trigger -->
+    <rect x="378" y="188" width="154" height="74" rx="8" fill="#131c31" stroke="#fbbf24" stroke-width="1.5" />
+    <text x="455" y="209" text-anchor="middle" fill="#fbbf24" font-family="Inter, sans-serif" font-size="12" font-weight="700">L1 SIMD Trigger</text>
+    <text x="455" y="226" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">AVX2 / Scalar Exact</text>
+    <text x="455" y="240" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">PI Prescaler (75% WM)</text>
+    <text x="455" y="254" text-anchor="middle" fill="#fbbf24" font-family="JetBrains Mono, monospace" font-size="9">p50 = 277 ns</text>
+
+    <!-- Stage 4: HLT Farm -->
+    <rect x="554" y="188" width="154" height="74" rx="8" fill="#131c31" stroke="#22d3ee" stroke-width="1.5" />
+    <text x="631" y="209" text-anchor="middle" fill="#67e8f9" font-family="Inter, sans-serif" font-size="12" font-weight="700">HLT Worker Farm</text>
+    <text x="631" y="226" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">W std::jthreads</text>
+    <text x="631" y="240" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">Recon + Int8 MLP</text>
+    <text x="631" y="254" text-anchor="middle" fill="#67e8f9" font-family="JetBrains Mono, monospace" font-size="9">p50 = 0.94 us • 100% Pur</text>
+
+    <!-- Stage 5: Async Storage -->
+    <rect x="730" y="188" width="156" height="74" rx="8" fill="#131c31" stroke="#10b981" stroke-width="1.5" />
+    <text x="808" y="209" text-anchor="middle" fill="#34d399" font-family="Inter, sans-serif" font-size="12" font-weight="700">Async EventWriter</text>
+    <text x="808" y="226" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">Double-Buf 256 KB</text>
+    <text x="808" y="240" text-anchor="middle" fill="#cbd5e1" font-family="JetBrains Mono, monospace" font-size="9.5">SSE4.2 CRC32C</text>
+    <text x="808" y="254" text-anchor="middle" fill="#34d399" font-family="JetBrains Mono, monospace" font-size="9">.daq v2 (ZS 1.66x)</text>
+
+    <!-- Pipeline arrows -->
+    <line x1="190" y1="225" x2="210" y2="225" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)" />
+    <line x1="356" y1="225" x2="376" y2="225" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)" />
+    <line x1="532" y1="225" x2="552" y2="225" stroke="#fbbf24" stroke-width="2" marker-end="url(#arrowAmber)" />
+    <line x1="708" y1="225" x2="728" y2="225" stroke="#22d3ee" stroke-width="2" marker-end="url(#arrowCyan)" />
+
+    <!-- SlabArena Pool Bar -->
+    <rect x="34" y="294" width="852" height="64" rx="10" fill="#091122" stroke="#22d3ee" stroke-opacity="0.45" stroke-width="1.4" />
+    <text x="460" y="317" text-anchor="middle" fill="#f8fafc" font-family="Space Grotesk, sans-serif" font-size="13" font-weight="700">SlabArena — Zero-Copy 64B-Aligned Pre-Allocated Memory Pool (65,536 x 256B RawEventFrame)</text>
+    <text x="460" y="338" text-anchor="middle" fill="#94a3b8" font-family="JetBrains Mono, monospace" font-size="10.5">32-bit SlotHandle descriptors traverse BoundedChannel queues • 128-bit CAS freelist (64-bit tag) • 0 leaked slots</text>
+
+    <!-- Acquire / Release arrows to SlabArena -->
+    <line x1="112" y1="262" x2="112" y2="291" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowCyan)" />
+    <line x1="455" y1="262" x2="455" y2="291" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="3 3" marker-end="url(#arrowCyan)" />
+    <line x1="631" y1="262" x2="631" y2="291" stroke="#94a3b8" stroke-width="1.3" stroke-dasharray="3 3" marker-end="url(#arrowCyan)" />
+    <line x1="808" y1="262" x2="808" y2="291" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowAmber)" />
+  </svg>
+</div>
+
+<style>
+  .tdaq-diagram-wrap {
+    margin: 1.5rem 0;
+    padding: 0.75rem;
+    border-radius: 14px;
+    background: #070b14;
+    border: 1px solid rgba(34, 211, 238, 0.2);
+    overflow-x: auto;
+  }
+  .tdaq-diagram-wrap svg {
+    width: 100%;
+    height: auto;
+    min-width: 640px;
+    display: block;
+  }
+</style>

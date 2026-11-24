@@ -1,0 +1,259 @@
+/* TriggerDAQ Custom Visual Identity — Cherenkov Cyan & Calorimeter Amber */
+
+:root {
+  --sl-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --sl-font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Dark mode palette (Default — Detector Chamber Obsidian) */
+  --sl-color-accent-low: #082f49;
+  --sl-color-accent: #06b6d4;
+  --sl-color-accent-high: #67e8f9;
+
+  --sl-color-white: #f8fafc;
+  --sl-color-gray-1: #e2e8f0;
+  --sl-color-gray-2: #cbd5e1;
+  --sl-color-gray-3: #94a3b8;
+  --sl-color-gray-4: #475569;
+  --sl-color-gray-5: #1e293b;
+  --sl-color-gray-6: #0f172a;
+  --sl-color-black: #070b14;
+
+  --tdaq-amber: #fbbf24;
+  --tdaq-cyan: #22d3ee;
+  --tdaq-surface: rgba(15, 23, 42, 0.72);
+  --tdaq-border: rgba(34, 211, 238, 0.22);
+}
+
+:root[data-theme='light'] {
+  --sl-color-accent-low: #e0f2fe;
+  --sl-color-accent: #0891b2;
+  --sl-color-accent-high: #0e7490;
+
+  --sl-color-white: #0f172a;
+  --sl-color-gray-1: #1e293b;
+  --sl-color-gray-2: #334155;
+  --sl-color-gray-3: #64748b;
+  --sl-color-gray-4: #94a3b8;
+  --sl-color-gray-5: #e2e8f0;
+  --sl-color-gray-6: #f1f5f9;
+  --sl-color-black: #ffffff;
+
+  --tdaq-amber: #d97706;
+  --tdaq-cyan: #0891b2;
+  --tdaq-surface: rgba(241, 245, 249, 0.85);
+  --tdaq-border: rgba(8, 145, 178, 0.25);
+}
+
+/* Display typography for headings & site title */
+h1, h2, h3, .site-title {
+  font-family: 'Space Grotesk', var(--sl-font);
+  letter-spacing: -0.02em;
+}
+
+.site-title {
+  font-weight: 700;
+  font-size: 1.2rem;
+}
+
+/* Subtle detector radial grid backdrop on splash hero */
+[data-has-hero] .page {
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(6, 182, 212, 0.16), transparent 70%),
+    radial-gradient(ellipse 40% 30% at 85% 15%, rgba(245, 158, 11, 0.10), transparent 65%);
+}
+
+/* Hero emblem glow */
+.hero img {
+  filter: drop-shadow(0 0 28px rgba(34, 211, 238, 0.28));
+}
+
+/* Live Telemetry Metric Strip */
+.tdaq-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0.9rem;
+  margin: 1.75rem 0 2.25rem;
+}
+
+.tdaq-metric-card {
+  background: var(--tdaq-surface);
+  border: 1px solid var(--tdaq-border);
+  border-radius: 12px;
+  padding: 1rem 1.15rem;
+  backdrop-filter: blur(8px);
+  transition: border-color 0.2s ease, transform 0.2s ease;
+}
+
+.tdaq-metric-card:hover {
+  border-color: var(--tdaq-cyan);
+  transform: translateY(-2px);
+}
+
+.tdaq-metric-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--sl-color-gray-3);
+  margin-bottom: 0.3rem;
+}
+
+.tdaq-metric-value {
+  font-family: 'Space Grotesk', var(--sl-font);
+  font-size: 1.55rem;
+  font-weight: 700;
+  color: var(--tdaq-cyan);
+  line-height: 1.15;
+}
+
+.tdaq-metric-value.amber {
+  color: var(--tdaq-amber);
+}
+
+.tdaq-metric-sub {
+  font-family: var(--sl-font-mono);
+  font-size: 0.75rem;
+  color: var(--sl-color-gray-3);
+  margin-top: 0.3rem;
+}
+
+/* Polished tables */
+table {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* Badges */
+.tdaq-badge-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 1.5rem;
+}
+
+.tdaq-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--sl-font-mono);
+  font-size: 0.76rem;
+  font-weight: 500;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  background: var(--tdaq-surface);
+  border: 1px solid var(--tdaq-border);
+  color: var(--sl-color-gray-1);
+}
+
+.tdaq-badge .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+}
+
+/* ============================================================================
+   Collapsible Left Navigation Sidebar & Right "On This Page" TOC
+   Expands the middle content section to full available width.
+   ============================================================================ */
+
+.tdaq-pane-toggle {
+  display: none;
+  position: fixed;
+  top: calc(var(--sl-nav-height, 3.5rem) + 0.65rem);
+  z-index: 30;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  height: 2rem;
+  padding: 0 0.55rem;
+  border-radius: 8px;
+  border: 1px solid var(--tdaq-border);
+  background: var(--tdaq-surface);
+  color: var(--sl-color-gray-2);
+  backdrop-filter: blur(10px);
+  cursor: pointer;
+  font-family: var(--sl-font-mono);
+  font-size: 0.72rem;
+  transition: left 0.2s ease, right 0.2s ease, border-color 0.2s ease, color 0.2s ease, background 0.2s ease;
+}
+
+.tdaq-pane-toggle:hover {
+  border-color: var(--tdaq-cyan);
+  color: var(--tdaq-cyan);
+}
+
+.tdaq-pane-toggle svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+/* Left sidebar toggle visible at Starlight's desktop sidebar breakpoint (50rem) */
+@media (min-width: 50rem) {
+  html[data-has-sidebar] .tdaq-pane-toggle.left {
+    display: inline-flex;
+    left: calc(var(--sl-sidebar-width, 18.75rem) + 0.65rem);
+  }
+
+  html[data-has-sidebar][data-left-collapsed='true'] .tdaq-pane-toggle.left {
+    left: 0.75rem;
+  }
+
+  html[data-has-sidebar][data-left-collapsed='true'] .sidebar-pane {
+    display: none !important;
+  }
+
+  html[data-has-sidebar][data-left-collapsed='true'] .main-frame {
+    padding-inline-start: 0 !important;
+  }
+
+  html[data-has-sidebar][data-left-collapsed='true'] .main-pane {
+    --sl-content-width: 72rem;
+  }
+}
+
+/* Right TOC toggle visible at Starlight's desktop TOC breakpoint (72rem) */
+@media (min-width: 72rem) {
+  html[data-has-toc] .tdaq-pane-toggle.right {
+    display: inline-flex;
+    right: calc(var(--sl-sidebar-width, 18.75rem) + 0.65rem);
+  }
+
+  html[data-has-toc][data-left-collapsed='true'] .tdaq-pane-toggle.right {
+    right: calc(18.75rem + 0.65rem);
+  }
+
+  html[data-has-toc][data-right-collapsed='true'] .tdaq-pane-toggle.right {
+    right: 0.75rem;
+  }
+
+  html[data-has-toc][data-right-collapsed='true'] .right-sidebar-container {
+    display: none !important;
+  }
+
+  html[data-has-toc][data-right-collapsed='true'] .main-pane {
+    width: 100% !important;
+    max-width: 100% !important;
+    --sl-content-width: 78rem;
+  }
+
+  /* When BOTH left and right menus are collapsed, let middle content take full width */
+  html[data-left-collapsed='true'][data-right-collapsed='true'] .main-pane {
+    width: 100% !important;
+    max-width: 100% !important;
+    --sl-content-width: 100%;
+  }
+
+  html[data-left-collapsed='true'][data-right-collapsed='true'] .sl-container {
+    max-width: min(100%, 104rem) !important;
+    margin-inline: auto !important;
+    padding-inline: 2.5rem;
+  }
+
+  html[data-right-collapsed='true'] .sl-container,
+  html[data-left-collapsed='true'] .sl-container {
+    margin-inline: auto !important;
+  }
+}
+

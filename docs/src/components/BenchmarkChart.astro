@@ -1,0 +1,71 @@
+---
+const rows = [
+  { mode: 'MaxThroughputStress (ZS)', rate: 1214.43, pct: 100, l1: '277 ns', hlt: '0.94 µs', zs: '1.66x', purity: '100.0%' },
+  { mode: 'CLI Stress + Disk .daq (ZS)', rate: 1052.25, pct: 87, l1: '266 ns', hlt: '0.88 µs', zs: '1.66x', purity: '100.0%' },
+  { mode: 'PoissonBurst 250 kHz (ZS)', rate: 247.30, pct: 21, l1: '262 ns', hlt: '0.99 µs', zs: '1.66x', purity: '100.0%' },
+  { mode: 'Sustained 200 kHz (Raw)', rate: 198.58, pct: 17, l1: '285 ns', hlt: '1.12 µs', zs: '1.00x', purity: '100.0%' },
+  { mode: 'EventBuilder 200 kHz (1% drop)', rate: 180.37, pct: 15, l1: '268 ns', hlt: '1.06 µs', zs: '1.66x', purity: '100.0%' },
+];
+---
+
+<div class="tdaq-bench">
+  {rows.map((r) => (
+    <div class="tdaq-bench-row">
+      <div class="tdaq-bench-head">
+        <span class="tdaq-bench-mode">{r.mode}</span>
+        <span class="tdaq-bench-stat">
+          <strong>{r.rate.toLocaleString('en-US', { minimumFractionDigits: 2 })} kHz</strong>
+          &nbsp;• L1 p50 {r.l1} • HLT p50 {r.hlt} • ZS {r.zs}
+        </span>
+      </div>
+      <div class="tdaq-bar-track">
+        <div class="tdaq-bar-fill" style={`width: ${r.pct}%`}></div>
+      </div>
+    </div>
+  ))}
+</div>
+
+<style>
+  .tdaq-bench {
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+    margin: 1.5rem 0;
+    padding: 1.25rem;
+    border-radius: 12px;
+    background: var(--tdaq-surface);
+    border: 1px solid var(--tdaq-border);
+  }
+  .tdaq-bench-head {
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+    margin-bottom: 0.35rem;
+  }
+  .tdaq-bench-mode {
+    font-weight: 600;
+    color: var(--sl-color-white);
+  }
+  .tdaq-bench-stat {
+    font-family: var(--sl-font-mono);
+    font-size: 0.78rem;
+    color: var(--sl-color-gray-3);
+  }
+  .tdaq-bench-stat strong {
+    color: var(--tdaq-cyan);
+  }
+  .tdaq-bar-track {
+    width: 100%;
+    height: 10px;
+    border-radius: 999px;
+    background: rgba(148, 163, 184, 0.16);
+    overflow: hidden;
+  }
+  .tdaq-bar-fill {
+    height: 100%;
+    border-radius: 999px;
+    background: linear-gradient(90deg, #06b6d4 0%, #22d3ee 65%, #fbbf24 100%);
+  }
+</style>

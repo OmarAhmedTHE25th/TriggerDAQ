@@ -1,0 +1,25 @@
+---
+title: System Overview
+description: How TriggerDAQ separates C++20 zero-allocation hot-path execution from Python control and telemetry.
+---
+
+import PipelineDiagram from '../../../components/PipelineDiagram.astro';
+
+Modeled directly on CERN's production trigger frameworks (**ATLAS Athena** and **CMS CMSSW**), TriggerDAQ enforces a strict architectural boundary between **real-time data-plane execution** and **control-plane orchestration**.
+
+<PipelineDiagram />
+
+## Separation of Concerns
+
+| Plane | Language & Runtime | Responsibilities | Constraints |
+| :--- | :--- | :--- | :--- |
+| **Data Plane** (`libtriggerdaq_core`) | Native C++20 (`-O3`, AVX2, SSE4.2, CX16) | Collision emulation, ROB assembly, L1 SIMD filtering, PI prescaling, HLT reconstruction & Int8 MLP, async CRC32C `.daq` I/O | **Zero** Python GIL, **zero** heap allocations after `configure()`, lock-free queues |
+| **Bridge** (`_triggerdaq_ext`) | `nanobind` + `scikit-build-core` | Exposes `TriggerEngine`, FSM transitions, atomic menu updates, telemetry snapshots, and zero-copy NumPy DAQ mapper | Releases GIL on all blocking/execution calls (`nb::gil_scoped_release`) |
+| **Control Plane** (`triggerdaq`) | Python 3.12+ (`numpy`, `rich`) | Declarative trigger menus, live 10 Hz telemetry dashboard & DQM charts, JSON LumiBlock export, offline `.daq` verification | `< 1 µs` lock-free snapshot polling without stalling worker threads |
+
+## End-to-End Event Lifecycle
+
+1. **Acquisition (`SlabArena::acquire`):** The `DetectorEmulator` (or `EventBuilder` in split-ROB mode) acquires a 32-bit `SlotHandle` pointing to a pre-allocated, 64-byte-aligned `RawEventFrame` (`256 B`) and parallel `HltDecisionMetadata` (`32 B`).
+2. **Level-1 Trigger (`L1Trigger`):** Evaluates calorimeter and muon sums using bit-identical AVX2 SIMD kernels, applies the closed-loop PI prescaler, records L1 latency against `l1_budget_ns`, and either releases rejected slots immediately or pushes accepted `SlotHandle`s to `hlt_queue_`.
+3. **High-Level Trigger (`HltFarm`):** `W` `std::jthread` workers compute calorimeter cluster centroid/width (`σ_cluster`), isolation ratio, and di-muon invariant mass proxy `M_inv`, score the event with a deterministic quantized Int8 MLP (`6 → 16 → 3`), update per-worker DQM physics histograms, and forward accepted handles to `storage_queue_`.
+4. **Async Storage (`EventWriter`):** Copies the frame and metadata into double-buffered 256 KB staging buffers, optionally applies Zero-Suppression encoding, computes the hardware SSE4.2 CRC32C checksum, **and only then** releases the `SlotHandle` back to `SlabArena`.
