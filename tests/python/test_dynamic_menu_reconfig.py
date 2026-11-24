@@ -54,3 +54,32 @@ def test_runtime_menu_hot_reload():
         "Expected L1 accepts to stop after hot-reloading disabled menu"
     )
     assert engine.snapshot().arena_allocated == 0
+
+
+def test_rapid_menu_swap_stress():
+    """500 rapid update_menu() swaps under MaxThroughputStress to verify race-free AtomicMenuSlot."""
+    cfg = td.EngineConfig()
+    cfg.arena_slots = 32768
+    cfg.hlt_workers = 4
+    cfg.mode = td.EmulatorMode.MaxThroughputStress
+    cfg.seed = 909
+
+    m1 = td.physics_nominal(version=1).compile()
+    m2 = td.heavy_ion_high_pileup(version=2).compile()
+
+    engine = td.TriggerEngine()
+    engine.initialize(cfg, m1)
+    engine.start()
+
+    for i in range(500):
+        menu = td.physics_nominal(version=i + 3).compile() if (i % 2 == 0) else td.heavy_ion_high_pileup(version=i + 3).compile()
+        engine.update_menu(menu)
+        if i % 50 == 0:
+            s = engine.snapshot()
+            assert s.num_rules in (3, 4)
+
+    engine.stop()
+    final = engine.snapshot()
+    assert final.events_generated > 0
+    assert final.arena_allocated == 0
+
