@@ -51,8 +51,16 @@ public:
                 continue;
             }
             for (size_t i = 0; i < NUM_WORDS; ++i) {
+#if defined(__SANITIZE_THREAD__)
+                buf[i] = words_[i].load(std::memory_order_acquire);
+#else
                 buf[i] = words_[i].load(std::memory_order_relaxed);
+#endif
             }
+#if !defined(__SANITIZE_THREAD__)
+            // Acquire fence prevents preceding relaxed payload loads from reordering after s2 on ARM64
+            std::atomic_thread_fence(std::memory_order_acquire);
+#endif
             const uint64_t s2 = seq_.load(std::memory_order_acquire);
             if (s1 == s2) {
                 TriggerMenu out{};
