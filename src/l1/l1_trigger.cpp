@@ -17,6 +17,22 @@ inline uint64_t steady_now_ns() noexcept {
             .count());
 }
 
+void publish_menu_metadata(const TriggerMenu& menu,
+                           const Prescaler& prescaler,
+                           L1Telemetry& telemetry) noexcept {
+    for (size_t i = 0; i < TriggerMenu::MAX_RULES; ++i) {
+        if (i < menu.num_rules) {
+            telemetry.active_prescales[i].store(
+                prescaler.current_factor(i), std::memory_order_relaxed);
+        } else {
+            telemetry.rule_accept_counts[i].store(0, std::memory_order_relaxed);
+            telemetry.active_prescales[i].store(1.0f, std::memory_order_relaxed);
+        }
+    }
+    telemetry.active_menu_num_rules.store(menu.num_rules, std::memory_order_release);
+    telemetry.active_menu_version.store(menu.version, std::memory_order_release);
+}
+
 } // namespace
 
 uint32_t L1Trigger::evaluate_frame(const RawEventFrame& frame,
@@ -72,18 +88,13 @@ void L1Trigger::run(SlabArena& arena,
     }
 
     Prescaler prescaler;
-    uint64_t last_menu_version = 0;
-    {
-        const TriggerMenu& initial_menu = menu_slot.load();
-        prescaler.reset(initial_menu);
-        last_menu_version = initial_menu.version;
-        for (size_t i = 0; i < TriggerMenu::MAX_RULES; ++i) {
-            telemetry.active_prescales[i].store(prescaler.current_factor(i), std::memory_order_relaxed);
-        }
-    }
+    TriggerMenu active_menu = menu_slot.load();
+    prescaler.reset(active_menu);
+    publish_menu_metadata(active_menu, prescaler, telemetry);
 
     uint64_t last_pi_ns = steady_now_ns();
     uint32_t iter_since_pi = 0;
+    uint32_t idle_iters = 0;
 
     for (;;) {
         SlotHandle slot = INVALID_SLOT;
@@ -91,16 +102,20 @@ void L1Trigger::run(SlabArena& arena,
             if (l1_queue.is_closed() && l1_queue.empty()) {
                 break;
             }
-            std::this_thread::yield();
+            idle_backoff(idle_iters);
             continue;
         }
+        idle_iters = 0;
 
         const uint64_t t0 = steady_now_ns();
-        const TriggerMenu& menu = menu_slot.load();
+        const TriggerMenu menu = menu_slot.load();
 
-        if (menu.version != last_menu_version) {
-            prescaler.reset(menu);
-            last_menu_version = menu.version;
+        if (menu.version != active_menu.version || menu.num_rules != active_menu.num_rules) {
+            active_menu = menu;
+            prescaler.reset(active_menu);
+            publish_menu_metadata(active_menu, prescaler, telemetry);
+        } else {
+            active_menu = menu;
         }
 
         // Update PI prescaler every 64 events or >= 1 ms
@@ -110,8 +125,8 @@ void L1Trigger::run(SlabArena& arena,
             if (dt_ns >= 1'000'000ULL) {
                 const float dt_sec = static_cast<float>(dt_ns) * 1e-9f;
                 const float fill = static_cast<float>(hlt_queue.fill_ratio());
-                prescaler.update_control(fill, dt_sec, menu);
-                for (size_t i = 0; i < TriggerMenu::MAX_RULES; ++i) {
+                prescaler.update_control(fill, dt_sec, active_menu);
+                for (size_t i = 0; i < active_menu.num_rules && i < TriggerMenu::MAX_RULES; ++i) {
                     telemetry.active_prescales[i].store(
                         prescaler.current_factor(i), std::memory_order_relaxed);
                 }
@@ -120,7 +135,7 @@ void L1Trigger::run(SlabArena& arena,
         }
 
         RawEventFrame* frame = arena.get_frame(slot);
-        const uint32_t bits = evaluate_frame(*frame, menu, prescaler, telemetry);
+        const uint32_t bits = evaluate_frame(*frame, active_menu, prescaler, telemetry);
         frame->l1_trigger_bits = bits;
 
         const uint64_t t1 = steady_now_ns();
@@ -132,7 +147,6 @@ void L1Trigger::run(SlabArena& arena,
 
         if (bits != 0U) {
             telemetry.l1_accepted.fetch_add(1, std::memory_order_relaxed);
-            // Lossless push to HLT: block/yield rather than dropping post-L1 accepted events
             hlt_queue.push_blocking(slot);
         } else {
             telemetry.l1_rejected.fetch_add(1, std::memory_order_relaxed);
@@ -140,7 +154,6 @@ void L1Trigger::run(SlabArena& arena,
         }
     }
 
-    // Signal downstream HLT farm that no more L1 events will arrive
     hlt_queue.close();
 }
 
