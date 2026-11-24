@@ -1,10 +1,13 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #include "triggerdaq/core/event_frame.hpp"
 
 namespace triggerdaq {
+
+inline constexpr size_t CLUSTER_WINDOW_SIZE = 4;
 
 struct L1Features {
     uint32_t total_et{0};

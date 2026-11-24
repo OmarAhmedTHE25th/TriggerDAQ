@@ -1,6 +1,7 @@
 #include "triggerdaq/l1/simd_kernels.hpp"
 
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 
 #if defined(__AVX2__)
@@ -17,21 +18,22 @@ L1Features extract_l1_features_scalar(const RawEventFrame& frame,
     uint16_t max_cell_val = 0;
     uint16_t peak_idx = 0;
 
-    for (uint16_t i = 0; i < 64; ++i) {
+    for (size_t i = 0; i < CALORIMETER_CELLS; ++i) {
         const uint16_t val = frame.calorimeter_cells[i];
         total_et += val;
         if (val > max_cell_val) {
             max_cell_val = val;
-            peak_idx = i;
+            peak_idx = static_cast<uint16_t>(i);
         }
     }
 
+    constexpr size_t LAST_WINDOW_START = CALORIMETER_CELLS - CLUSTER_WINDOW_SIZE;
     uint32_t max_cluster4 = 0;
-    for (int i = 0; i <= 60; ++i) {
-        const uint32_t s = static_cast<uint32_t>(frame.calorimeter_cells[i]) +
-                           static_cast<uint32_t>(frame.calorimeter_cells[i + 1]) +
-                           static_cast<uint32_t>(frame.calorimeter_cells[i + 2]) +
-                           static_cast<uint32_t>(frame.calorimeter_cells[i + 3]);
+    for (size_t i = 0; i <= LAST_WINDOW_START; ++i) {
+        uint32_t s = 0;
+        for (size_t k = 0; k < CLUSTER_WINDOW_SIZE; ++k) {
+            s += static_cast<uint32_t>(frame.calorimeter_cells[i + k]);
+        }
         if (s > max_cluster4) {
             max_cluster4 = s;
         }
@@ -39,7 +41,7 @@ L1Features extract_l1_features_scalar(const RawEventFrame& frame,
 
     uint16_t max_muon = 0;
     uint16_t muon_count = 0;
-    for (int i = 0; i < 16; ++i) {
+    for (size_t i = 0; i < MUON_CHAMBERS; ++i) {
         const uint16_t pt = frame.muon_hits[i];
         if (pt > max_muon) {
             max_muon = pt;
@@ -61,6 +63,16 @@ L1Features extract_l1_features_scalar(const RawEventFrame& frame,
 L1Features extract_l1_features_avx2(const RawEventFrame& frame,
                                     uint16_t muon_pt_threshold) noexcept {
     L1Features out{};
+
+    constexpr size_t AVX2_U32_LANES = 8; // 256-bit / 32-bit
+    constexpr size_t NUM_WINDOWS = CALORIMETER_CELLS - CLUSTER_WINDOW_SIZE + 1;
+    constexpr size_t MAIN_LOOP_END = (NUM_WINDOWS / AVX2_U32_LANES) * AVX2_U32_LANES;
+    constexpr size_t TAIL_OFFSET = NUM_WINDOWS - AVX2_U32_LANES;
+
+    static_assert(CALORIMETER_CELLS == 64 && CLUSTER_WINDOW_SIZE == 4,
+                  "AVX2 L1 kernel expects 64 calorimeter cells and 4-cell cluster window");
+    static_assert(TAIL_OFFSET + AVX2_U32_LANES + CLUSTER_WINDOW_SIZE - 1 <= CALORIMETER_CELLS,
+                  "AVX2 tail window load must stay strictly within calorimeter_cells bounds");
 
     const __m256i zero = _mm256_setzero_si256();
     const uint16_t* cells = frame.calorimeter_cells;
@@ -111,25 +123,21 @@ L1Features extract_l1_features_avx2(const RawEventFrame& frame,
         out.peak_cell_idx = static_cast<uint16_t>(48U + (std::countr_zero(mask) >> 1));
     }
 
-    // 2. Max 4-cell sliding window sum (i = 0..60) using 8-wide uint32_t lanes (zero overflow)
+    // 2. Max 4-cell sliding window sum using 8-wide uint32_t lanes (zero overflow)
+    auto eval_8_windows = [&](size_t offset) noexcept -> __m256i {
+        __m256i w0 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + offset)));
+        __m256i w1 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + offset + 1)));
+        __m256i w2 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + offset + 2)));
+        __m256i w3 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + offset + 3)));
+        return _mm256_add_epi32(_mm256_add_epi32(w0, w1), _mm256_add_epi32(w2, w3));
+    };
+
     __m256i max_win = _mm256_setzero_si256();
-    for (int i = 0; i <= 48; i += 8) {
-        __m256i w0 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i)));
-        __m256i w1 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 1)));
-        __m256i w2 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 2)));
-        __m256i w3 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 3)));
-        __m256i s = _mm256_add_epi32(_mm256_add_epi32(w0, w1), _mm256_add_epi32(w2, w3));
-        max_win = _mm256_max_epu32(max_win, s);
+    for (size_t i = 0; i < MAIN_LOOP_END; i += AVX2_U32_LANES) {
+        max_win = _mm256_max_epu32(max_win, eval_8_windows(i));
     }
-    // Tail windows i = 53..60 (8 windows, overlaps 53..55 safely)
-    {
-        constexpr int i = 53;
-        __m256i w0 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i)));
-        __m256i w1 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 1)));
-        __m256i w2 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 2)));
-        __m256i w3 = _mm256_cvtepu16_epi32(_mm_loadu_si128(reinterpret_cast<const __m128i*>(cells + i + 3)));
-        __m256i s = _mm256_add_epi32(_mm256_add_epi32(w0, w1), _mm256_add_epi32(w2, w3));
-        max_win = _mm256_max_epu32(max_win, s);
+    if constexpr (MAIN_LOOP_END < NUM_WINDOWS) {
+        max_win = _mm256_max_epu32(max_win, eval_8_windows(TAIL_OFFSET));
     }
 
     __m128i mw128 = _mm_max_epu32(_mm256_castsi256_si128(max_win), _mm256_extracti128_si256(max_win, 1));
