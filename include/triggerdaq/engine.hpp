@@ -45,7 +45,7 @@ public:
     // Starts Frontend, L1, HLT, and Storage threads.
     void start();
 
-    // Gracefully drains queues and stops all threads.
+    // Lossless ordered upstream-to-downstream shutdown and drain.
     void stop();
 
     // Convenience: start(), sleep for `seconds`, then stop().
@@ -67,12 +67,7 @@ private:
     EngineConfig config_{};
     bool initialized_{false};
     std::atomic<bool> running_{false};
-
-    // Ordered shutdown flags for clean draining
     std::atomic<bool> stop_frontend_{false};
-    std::atomic<bool> stop_l1_{false};
-    std::atomic<bool> stop_hlt_{false};
-    std::atomic<bool> stop_storage_{false};
 
     SlabArena arena_;
     BoundedChannel<SlotHandle> l1_queue_;

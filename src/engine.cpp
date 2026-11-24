@@ -39,10 +39,10 @@ void TriggerEngine::start() {
         return; // Already running
     }
 
-    stop_frontend_.store(false, std::memory_order_relaxed);
-    stop_l1_.store(false, std::memory_order_relaxed);
-    stop_hlt_.store(false, std::memory_order_relaxed);
-    stop_storage_.store(false, std::memory_order_relaxed);
+    stop_frontend_.store(false, std::memory_order_release);
+    l1_queue_.reopen();
+    hlt_queue_.reopen();
+    storage_queue_.reopen();
 
     emulator_telemetry_.reset();
     l1_telemetry_.reset();
@@ -53,19 +53,20 @@ void TriggerEngine::start() {
 
     // Start downstream stages first so queues are ready to drain immediately
     storage_thread_ = std::jthread([this]() {
-        event_writer_.run(stop_storage_, arena_, storage_queue_, storage_telemetry_);
+        event_writer_.run(arena_, storage_queue_, storage_telemetry_, config_.pin_threads, 2U);
     });
 
-    hlt_farm_.start(stop_hlt_, arena_, hlt_queue_, storage_queue_, menu_slot_);
+    hlt_farm_.start(arena_, hlt_queue_, storage_queue_, menu_slot_);
 
     l1_thread_ = std::jthread([this]() {
-        l1_trigger_.run(stop_l1_, arena_, l1_queue_, hlt_queue_, menu_slot_,
-                        l1_telemetry_, config_.l1_budget_ns);
+        l1_trigger_.run(arena_, l1_queue_, hlt_queue_, menu_slot_,
+                        l1_telemetry_, config_.l1_budget_ns, config_.pin_threads, 1U);
     });
 
     frontend_thread_ = std::jthread([this]() {
         emulator_.run(stop_frontend_, arena_, l1_queue_, emulator_telemetry_,
-                      config_.mode, config_.target_rate_khz, config_.seed);
+                      config_.mode, config_.target_rate_khz, config_.seed,
+                      config_.pin_threads, 0U);
     });
 }
 
@@ -74,21 +75,24 @@ void TriggerEngine::stop() {
         return;
     }
 
-    // Ordered pipeline shutdown: stop producer, join, then signal next stage to drain
+    // Step 1: Stop DetectorEmulator and join
     stop_frontend_.store(true, std::memory_order_release);
     if (frontend_thread_.joinable()) {
         frontend_thread_.join();
     }
 
-    stop_l1_.store(true, std::memory_order_release);
+    // Step 2: Close L1 channel; L1 drains losslessly into HLT, closes hlt_queue_, and joins
+    l1_queue_.close();
     if (l1_thread_.joinable()) {
         l1_thread_.join();
     }
 
-    stop_hlt_.store(true, std::memory_order_release);
+    // Step 3: HLT workers drain all queued slots until hlt_queue_ is empty & closed,
+    // push losslessly into storage_queue_, and join; then close storage_queue_.
     hlt_farm_.stop();
+    storage_queue_.close();
 
-    stop_storage_.store(true, std::memory_order_release);
+    // Step 4: Storage drains all remaining records, flushes double buffers to disk, and joins.
     if (storage_thread_.joinable()) {
         storage_thread_.join();
     }
@@ -154,6 +158,7 @@ TelemetrySnapshot TriggerEngine::snapshot() const noexcept {
     }
 
     const LatencyStats hlt_ns = hlt_hist.compute_stats();
+    snap.hlt_latency_us.min = hlt_ns.min * 1e-3;
     snap.hlt_latency_us.p50 = hlt_ns.p50 * 1e-3;
     snap.hlt_latency_us.p95 = hlt_ns.p95 * 1e-3;
     snap.hlt_latency_us.p99 = hlt_ns.p99 * 1e-3;
@@ -163,6 +168,7 @@ TelemetrySnapshot TriggerEngine::snapshot() const noexcept {
     snap.dead_time_events = total_dead;
     snap.bytes_written = storage_telemetry_.bytes_written.load(std::memory_order_relaxed);
     snap.events_written = storage_telemetry_.events_written.load(std::memory_order_relaxed);
+    snap.storage_write_errors = storage_telemetry_.storage_write_errors.load(std::memory_order_relaxed);
 
     snap.arena_allocated = arena_.allocated_count();
     snap.arena_peak = arena_.peak_occupancy();
