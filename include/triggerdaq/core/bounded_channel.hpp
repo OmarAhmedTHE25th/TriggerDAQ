@@ -4,12 +4,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <stdexcept>
+#include <thread>
 #include <type_traits>
 
 namespace triggerdaq {
 
 // Lock-free cache-padded bounded MPMC/SPSC ring buffer (Vyukov algorithm).
+// Supports consistent atomic size tracking and explicit close/drain semantics.
 // Zero heap allocations after initialize().
 template <typename T>
 class BoundedChannel {
@@ -41,6 +42,20 @@ public:
         }
         enqueue_pos_.store(0, std::memory_order_relaxed);
         dequeue_pos_.store(0, std::memory_order_relaxed);
+        size_.store(0, std::memory_order_relaxed);
+        closed_.store(false, std::memory_order_release);
+    }
+
+    void close() noexcept {
+        closed_.store(true, std::memory_order_release);
+    }
+
+    void reopen() noexcept {
+        closed_.store(false, std::memory_order_release);
+    }
+
+    [[nodiscard]] bool is_closed() const noexcept {
+        return closed_.load(std::memory_order_acquire);
     }
 
     [[nodiscard]] bool try_push(const T& item) noexcept {
@@ -63,7 +78,16 @@ public:
         }
         cell->data = item;
         cell->sequence.store(pos + 1, std::memory_order_release);
+        size_.fetch_add(1, std::memory_order_release);
         return true;
+    }
+
+    // Lossless push used during ordered shutdown drain so downstream stages
+    // finish consuming without dropping already-accepted events.
+    void push_blocking(const T& item) noexcept {
+        while (!try_push(item)) {
+            std::this_thread::yield();
+        }
     }
 
     [[nodiscard]] bool try_pop(T& item) noexcept {
@@ -86,17 +110,14 @@ public:
         }
         item = cell->data;
         cell->sequence.store(pos + mask_ + 1, std::memory_order_release);
+        size_.fetch_sub(1, std::memory_order_release);
         return true;
     }
 
+    // Consistent, single-atomic acquire occupancy count (no torn enqueue/dequeue reads).
     [[nodiscard]] size_t size() const noexcept {
-        const size_t enq = enqueue_pos_.load(std::memory_order_relaxed);
-        const size_t deq = dequeue_pos_.load(std::memory_order_relaxed);
-        if (enq <= deq) {
-            return 0;
-        }
-        const size_t diff = enq - deq;
-        return diff > capacity_ ? capacity_ : diff;
+        const size_t s = size_.load(std::memory_order_acquire);
+        return s > capacity_ ? capacity_ : s;
     }
 
     [[nodiscard]] size_t capacity() const noexcept {
@@ -111,7 +132,7 @@ public:
     }
 
     [[nodiscard]] bool empty() const noexcept {
-        return size() == 0;
+        return size_.load(std::memory_order_acquire) == 0;
     }
 
 private:
@@ -126,6 +147,8 @@ private:
 
     alignas(64) std::atomic<size_t> enqueue_pos_{0};
     alignas(64) std::atomic<size_t> dequeue_pos_{0};
+    alignas(64) std::atomic<size_t> size_{0};
+    alignas(64) std::atomic<bool> closed_{false};
 };
 
 } // namespace triggerdaq
