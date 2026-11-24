@@ -13,7 +13,7 @@ namespace {
 //   q0 = cluster_centroid / 64
 //   q1 = cluster_width / 25
 //   q2 = isolation_ratio
-//   q3 = dimuon_inv_mass / 80
+//   q3 = dimuon_inv_mass / 150
 //   q4 = total_et_norm (total_et / 4000)
 //   q5 = peak_muon_norm (peak_muon / 80)
 constexpr int8_t W1[16][6] = {
