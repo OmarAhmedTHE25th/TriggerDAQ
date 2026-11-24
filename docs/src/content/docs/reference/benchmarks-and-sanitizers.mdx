@@ -30,6 +30,8 @@ Measured on **Ubuntu 24.04 (WSL2)**, `g++ 13.3.0`, `-std=c++20 -O3 -Wall -Wextra
 
 ## Sanitizer & Test Verification Matrix
 
+![TriggerDAQ C++20 CTest and Python pytest Suite](/screenshots/test-suite.png)
+
 | Suite | Toolchain / Sanitizer | Result | Coverage |
 | :--- | :--- | :---: | :--- |
 | **C++ Release (`ctest`)** | `g++ 13.3 -O3 -Werror -mavx2 -msse4.2 -mcx16` | **6/6 PASS** | `test_slab_arena` (10M cycles/8 threads), `test_l1_simd` (50k frames bit-exact), `test_prescaler`, `test_storage_crc`, `test_shutdown_drain`, `test_cern_upgrades` |

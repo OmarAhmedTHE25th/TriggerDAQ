@@ -61,6 +61,19 @@ Modeled on CERN's ATLAS/CMS Level-1 (L1) and High-Level Trigger (HLT) architectu
 
 ---
 
+## Live CLI & Test Run Screenshots
+
+### Live Rich Telemetry Dashboard (`triggerdaq --mode sustained --rate-khz 150 --zero-suppression`)
+![TriggerDAQ Live Rich Telemetry Dashboard](assets/screenshots/cli-dashboard.png)
+
+### Binary `.daq` CRC32C & Zero-Suppression Inspector (`triggerdaq-inspect`)
+![TriggerDAQ Binary Inspector](assets/screenshots/cli-inspect.png)
+
+### C++20 `ctest` (6/6) & Python `pytest` (7/7) Test Suite Run
+![TriggerDAQ CTest and Pytest Suite](assets/screenshots/test-suite.png)
+
+---
+
 ## Building & Testing
 
 ### 1. C++20 Core, Unit Tests & Benchmark (`cmake` + `ctest`)

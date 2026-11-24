@@ -20,9 +20,7 @@ triggerdaq \
 
 When attached to an interactive TTY with `rich` installed, `triggerdaq` renders a live 10 Hz dashboard including input/L1/HLT rates, `p50/p99/p99.9` latencies, queue watermarks, active prescales, LumiBlock ID, and a live 32-bin **DQM Di-Muon Invariant Mass** bar chart:
 
-```text
-DQM Di-Muon: 0 GeV |█           ▁▂▃▅▆▇██▇▇▆▅▄▃▂▁▁   | 160 GeV (peak bin=8,386)
-```
+![TriggerDAQ Live Rich Telemetry Dashboard](/screenshots/cli-dashboard.png)
 
 ## 2. Inspect & Verify a `.daq` Run File
 
@@ -32,21 +30,7 @@ DQM Di-Muon: 0 GeV |█           ▁▂▃▅▆▇██▇▇▆▅▄▃▂�
 triggerdaq-inspect run_zs.daq
 ```
 
-```text
-TriggerDAQ Inspector: run_zs.daq
-  Header Valid:    True (schema v2, ZS=ON)
-  Total Records:   183687
-  Valid Records:   183687
-  Corrupt Records: 0
-  HLT Score:       mean=944.4, min=501, max=1000
-  LumiBlocks:      1..6  |  BCID range: 0..3443
-  Signal Purity:   100.00%
-  Topology Breakdown:
-    - Background    :        0 ( 0.00%)
-    - DiMuon        :    78677 (42.83%)
-    - LocalizedJet  :   105010 (57.17%)
-    - PileupNoise   :        0 ( 0.00%)
-```
+![TriggerDAQ Binary .daq CRC32C Inspector](/screenshots/cli-inspect.png)
 
 ## 3. Control TriggerEngine from Python
 
