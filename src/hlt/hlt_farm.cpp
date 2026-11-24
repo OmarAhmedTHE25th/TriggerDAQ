@@ -68,6 +68,7 @@ void HltFarm::worker_loop(uint32_t worker_id,
     }
 
     WorkerTelemetry& wt = telemetry_[worker_id];
+    uint32_t idle_iters = 0;
 
     for (;;) {
         SlotHandle slot = INVALID_SLOT;
@@ -75,14 +76,15 @@ void HltFarm::worker_loop(uint32_t worker_id,
             if (hlt_queue.is_closed() && hlt_queue.empty()) {
                 break;
             }
-            std::this_thread::yield();
+            idle_backoff(idle_iters);
             continue;
         }
+        idle_iters = 0;
 
         const uint64_t t0 = steady_now_ns();
         RawEventFrame* frame = arena.get_frame(slot);
         HltDecisionMetadata* meta = arena.get_metadata(slot);
-        const TriggerMenu& menu = menu_slot.load();
+        const TriggerMenu menu = menu_slot.load();
 
         const HltFeatures feats = reconstruct_event(*frame);
         const ClassifierOutput pred = Int8MlpClassifier::predict(feats);
@@ -111,6 +113,32 @@ void HltFarm::worker_loop(uint32_t worker_id,
             } else {
                 wt.hlt_false_positives.fetch_add(1, std::memory_order_relaxed);
             }
+
+            // Update live DQM physics histograms
+            // 1. Di-Muon invariant mass: 32 bins covering 0..160 GeV (5 GeV/bin)
+            const size_t mass_bin = feats.dimuon_inv_mass <= 0.0f
+                                        ? 0U
+                                        : std::min<size_t>(
+                                              static_cast<size_t>(feats.dimuon_inv_mass / 5.0f),
+                                              DQM_DIMUON_BINS - 1U);
+            wt.dqm_dimuon_mass_hist[mass_bin].fetch_add(1, std::memory_order_relaxed);
+
+            // 2. Jet / Total ET: 16 bins covering 0..1600 MeV (100 MeV/bin)
+            const float jet_et = feats.total_et_norm * 4000.0f * feats.isolation_ratio;
+            const size_t jet_bin = jet_et <= 0.0f
+                                       ? 0U
+                                       : std::min<size_t>(
+                                             static_cast<size_t>(jet_et / 100.0f),
+                                             DQM_JET_ET_BINS - 1U);
+            wt.dqm_jet_et_hist[jet_bin].fetch_add(1, std::memory_order_relaxed);
+
+            // 3. Calorimeter cell occupancy: increment peak cell
+            const size_t cell_bin = feats.cluster_centroid <= 0.0f
+                                        ? 0U
+                                        : std::min<size_t>(
+                                              static_cast<size_t>(feats.cluster_centroid + 0.5f),
+                                              DQM_CALO_CELLS - 1U);
+            wt.dqm_calo_occupancy[cell_bin].fetch_add(1, std::memory_order_relaxed);
 
             // Lossless push to Storage: block/yield rather than dropping HLT-accepted events
             storage_queue.push_blocking(slot);
