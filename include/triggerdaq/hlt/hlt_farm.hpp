@@ -21,7 +21,7 @@ public:
     HltFarm(const HltFarm&) = delete;
     HltFarm& operator=(const HltFarm&) = delete;
 
-    void initialize(uint32_t num_workers, bool pin_threads);
+    void initialize(uint32_t num_workers, bool pin_threads, uint32_t base_core_idx = 3U);
 
     void start(SlabArena& arena,
                BoundedChannel<SlotHandle>& hlt_queue,
@@ -44,6 +44,7 @@ private:
 
     uint32_t num_workers_{0};
     bool pin_threads_{false};
+    uint32_t base_core_idx_{3U};
     std::unique_ptr<WorkerTelemetry[]> telemetry_;
     std::vector<std::jthread> workers_;
 };

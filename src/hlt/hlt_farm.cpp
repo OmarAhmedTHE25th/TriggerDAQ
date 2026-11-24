@@ -24,10 +24,11 @@ HltFarm::~HltFarm() {
     stop();
 }
 
-void HltFarm::initialize(uint32_t num_workers, bool pin_threads) {
+void HltFarm::initialize(uint32_t num_workers, bool pin_threads, uint32_t base_core_idx) {
     stop();
     num_workers_ = num_workers > 0 ? num_workers : 1U;
     pin_threads_ = pin_threads;
+    base_core_idx_ = base_core_idx;
     telemetry_ = std::make_unique<WorkerTelemetry[]>(num_workers_);
     for (uint32_t i = 0; i < num_workers_; ++i) {
         telemetry_[i].reset();
@@ -63,8 +64,7 @@ void HltFarm::worker_loop(uint32_t worker_id,
                           BoundedChannel<SlotHandle>& storage_queue,
                           const AtomicMenuSlot& menu_slot) noexcept {
     if (pin_threads_) {
-        // Reserve cores 0 (Frontend), 1 (L1), 2 (Storage); pin HLT workers from core 3+
-        pin_current_thread(worker_id + 3U);
+        pin_current_thread(base_core_idx_ + worker_id);
     }
 
     WorkerTelemetry& wt = telemetry_[worker_id];
