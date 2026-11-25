@@ -32,3 +32,6 @@ docs/.vercel
 .idea/
 .DS_Store
 compile_commands.json
+
+.vercel
+.env*

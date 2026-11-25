@@ -2,6 +2,8 @@
 
 **Hybrid C++20 / Python Two-Stage Real-Time Detector Trigger & Data Acquisition (DAQ) Engine**
 
+📖 **Live Documentation:** https://triggerdaq.vercel.app
+
 Modeled on CERN's ATLAS/CMS Level-1 (L1) and High-Level Trigger (HLT) architecture, TriggerDAQ separates **lock-free, zero-allocation C++20 hot-path execution** from a **Python 3.12+ control, telemetry, and analysis plane** connected via `nanobind`.
 
 ---

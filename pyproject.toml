@@ -27,3 +27,6 @@ cmake.define.TRIGGERDAQ_BUILD_PYTHON = "ON"
 cmake.define.TRIGGERDAQ_BUILD_TESTS = "OFF"
 cmake.define.TRIGGERDAQ_BUILD_BENCHMARKS = "OFF"
 editable.mode = "redirect"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"
